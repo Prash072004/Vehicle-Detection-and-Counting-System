@@ -5,7 +5,7 @@ import math
 from sort import *  # from sort import everything
 import numpy as np
 
-cap = cv2.VideoCapture(r"C:\Users\ooo\Downloads\4K Video of Highway Traffic_(1080P_HD).mp4")
+cap = cv2.VideoCapture(r"Here we need to add the path of the video")
 
 model = YOLO(r"G:\PYcharm Projects\ML\Yolo-Weights\yolov8l.pt")
 '''print(model.names)
