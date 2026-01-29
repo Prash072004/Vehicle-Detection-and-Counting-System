@@ -47,5 +47,5 @@ allowing the administrator to observe detected vehicles, identify violations, an
 </p>
 
 <p align="center">
-  <em>FFigure: Stored Violation Data</em>
+  <em>Figure: Stored Violation Data</em>
 </p>
