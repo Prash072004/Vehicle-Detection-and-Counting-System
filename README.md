@@ -7,8 +7,13 @@ The implementation phase involves setting up the system environment, running the
 The Traffic Signal Violation Detection System uses OpenCV and YOLOv8 for real-time computer vision processing.
 
 
-<img width="879" height="450" alt="image" src="https://github.com/user-attachments/assets/031d8b03-4b8e-4fcc-a6c3-534eeae095b9" />
-Figure: Flask-based Traffic Violation Detection Web Interface
+<p align="center">
+   <img width="879" height="450" alt="image" src="https://github.com/user-attachments/assets/031d8b03-4b8e-4fcc-a6c3-534eeae095b9" />
+</p>
+
+<p align="center">
+  <em>Figure: Flask-based Traffic Violation Detection Web Interface</em>
+</p>
    
    
 OpenCV (Open Source Computer Vision Library) is used to handle image and video processing operations such as reading video frames, resizing, drawing lines and bounding boxes, encoding frames for streaming, and basic image preprocessing for license plate recognition. 
