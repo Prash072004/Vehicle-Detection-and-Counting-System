@@ -5,10 +5,12 @@ violation tracking, and license plate recognition. Once the Flask server is star
 initializes the trained models, loads the video stream, and begins real-time 
 processing of traffic footage. The server console confirms that the application is 
 successfully running and ready to perform detection operations.
-<img width="902" height="157" alt="image" src="https://github.com/user-attachments/assets/11d801a7-84f3-427e-bfa6-2e89fa856907" />
+<img width="898" height="154" alt="image" src="https://github.com/user-attachments/assets/c32c3231-9630-49bb-b685-66b83cdbbfee" />
 
 The Traffic Signal Violation Detection System uses OpenCV and YOLOv8 for 
-real-time computer vision processing. 
+real-time computer vision processing.
+<img width="879" height="450" alt="image" src="https://github.com/user-attachments/assets/031d8b03-4b8e-4fcc-a6c3-534eeae095b9" />
+
 Page | 10    
 Page | 11    
    
