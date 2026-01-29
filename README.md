@@ -20,17 +20,32 @@ OpenCV (Open Source Computer Vision Library) is used to handle image and video p
  
 The YOLOv8 model (developed by Ultralytics) is used for vehicle detection. It identifies and classifies vehicles such as cars, buses, trucks, and motorbikes in each frame. The SORT (Simple Online and Realtime Tracking) algorithm is then applied to assign unique tracking IDs to each vehicle, allowing the system to monitor them across multiple frames.
 
-<img width="861" height="436" alt="image" src="https://github.com/user-attachments/assets/e2cbd195-3b3d-4fe0-88d5-3945d34828b8" />
-Figure: Red-Light Violation Detected by the System
+<p align="center">
+   <img width="861" height="436" alt="image" src="https://github.com/user-attachments/assets/e2cbd195-3b3d-4fe0-88d5-3945d34828b8" />
+</p>
+
+<p align="center">
+  <em>Figure: Red-Light Violation Detected by the System</em>
+</p>
 
 
 A second YOLO model, specifically trained for license plate detection, is used to extract the region of interest (ROI) containing the vehicle’s plate when a violation occurs. The cropped plate image is then processed using OpenCV image preprocessing techniques (grayscale conversion and thresholding) before text recognition is performed by the OCR module (read_license_plate() function). The entire process runs within a Flask web application, which serves as the graphical user interface (GUI) for monitoring traffic in real time. The Flask server continuously streams processed video frames to the web browser, 
 allowing the administrator to observe detected vehicles, identify violations, and monitor recognized license plate numbers dynamically. Additionally, the interface provides manual control options for switching the traffic signal between red and green, enabling flexible testing and demonstration of the system’s capabilities.
 
 
-<img width="858" height="431" alt="image" src="https://github.com/user-attachments/assets/018fb558-8142-4561-bf05-3914635b11bc" />
-Figure: License Plate Detection and Text Recognition
+<p align="center">
+   <img width="858" height="431" alt="image" src="https://github.com/user-attachments/assets/018fb558-8142-4561-bf05-3914635b11bc" />
+</p>
+
+<p align="center">
+  <em>Figure: License Plate Detection and Text Recognition</em>
+</p>
 
 
-<img width="857" height="434" alt="image" src="https://github.com/user-attachments/assets/ec8cb04c-6403-4f60-906c-54cb988a6d44" />
-Figure: Stored Violation Data
+<p align="center">
+   <img width="857" height="434" alt="image" src="https://github.com/user-attachments/assets/ec8cb04c-6403-4f60-906c-54cb988a6d44" />
+</p>
+
+<p align="center">
+  <em>FFigure: Stored Violation Data</em>
+</p>
