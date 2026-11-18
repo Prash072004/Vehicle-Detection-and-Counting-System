@@ -1,5 +1,6 @@
 import atexit
 import logging
+import os
 from pathlib import Path
 from threading import Lock, RLock
 
@@ -8,6 +9,7 @@ import cv2
 import cvzone
 import numpy as np
 from violation_logic import CrossingConfig, CrossingDetector
+from vehicle_detector import DetectionConfig, detect_vehicles, project_path, resolve_video_source
 
 
 app = Flask(__name__)
@@ -15,10 +17,12 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 VIDEO_PATH = PROJECT_ROOT / "video" / "sample.mp4"
+_active_video_source = VIDEO_PATH
 VEHICLE_MODEL_PATH = PROJECT_ROOT / "models" / "yolov8n.pt"
 PLATE_MODEL_PATH = PROJECT_ROOT / "models" / "license_plate_detector.pt"
 MAX_ENCODING_FAILURES = 3
 CROSSING_CONFIG = CrossingConfig()
+VEHICLE_DETECTION_CONFIG = DetectionConfig()
 crossing_detector = CrossingDetector(CROSSING_CONFIG)
 
 # Resources belong to the process, not to an individual streaming request.
@@ -72,6 +76,8 @@ def initialize_resources():
     global cap, coco_model, license_plate_detector_model, mot_tracker
     global get_car, read_license_plate, _initialized, _initialization_error
     global crossing_detector, _frame_index, _last_video_timestamp_ms
+    global VEHICLE_DETECTION_CONFIG
+    global _active_video_source
 
     with _resource_lock:
         if _initialization_error is not None:
@@ -81,20 +87,25 @@ def initialize_resources():
 
         capture = None
         try:
-            _require_file(VIDEO_PATH, "Video source")
-            _require_file(VEHICLE_MODEL_PATH, "Vehicle YOLO weight file")
+            detection_config = DetectionConfig.from_environment(VEHICLE_DETECTION_CONFIG)
+            detection_config.roi.validate_frame(CROSSING_CONFIG.frame_size)
+            source = resolve_video_source(os.environ.get('TRAFFIC_VIDEO_SOURCE', VIDEO_PATH), PROJECT_ROOT)
+            vehicle_path = project_path(os.environ.get('TRAFFIC_VEHICLE_MODEL', VEHICLE_MODEL_PATH), PROJECT_ROOT)
+            if isinstance(source, Path):
+                _require_file(source, "Video source")
+            _require_file(vehicle_path, "Vehicle YOLO weight file")
             _require_file(PLATE_MODEL_PATH, "License plate YOLO weight file")
             try:
-                capture = cv2.VideoCapture(str(VIDEO_PATH))
+                capture = cv2.VideoCapture(str(source) if isinstance(source, Path) else source)
                 if not capture.isOpened():
                     raise RuntimeError("VideoCapture did not open")
             except Exception as error:
                 raise RuntimeError(
                     "Could not open video {}. Check file readability, corruption, "
-                    "and codec support: {}".format(VIDEO_PATH, error)
+                    "and codec support (or webcam availability): {}".format(source, error)
                 ) from error
 
-            vehicle_model = _load_yolo_model(VEHICLE_MODEL_PATH)
+            vehicle_model = _load_yolo_model(vehicle_path)
             plate_model = _load_yolo_model(PLATE_MODEL_PATH)
             from sort.sort import Sort
             from util import get_car as associate_plate, read_license_plate as recognize_plate
@@ -108,13 +119,15 @@ def initialize_resources():
         coco_model = vehicle_model
         license_plate_detector_model = plate_model
         mot_tracker = tracker
+        VEHICLE_DETECTION_CONFIG = detection_config
+        _active_video_source = source
         get_car = associate_plate
         read_license_plate = recognize_plate
         crossing_detector = CrossingDetector(CROSSING_CONFIG)
         _frame_index = -1
         _last_video_timestamp_ms = None
         _initialized = True
-        logger.info("Video resources initialized for %s", VIDEO_PATH)
+        logger.info("Video resources initialized for %s; vehicle settings: %s", source, detection_config)
 
 
 def shutdown_resources():
@@ -165,7 +178,6 @@ def generate_frames():
 
     # Clients still share one source and tracker. Serialize a frame, but do not
     # hold the lock across yield or release the capture on client disconnect.
-    vehicles = [2, 3, 5, 7]
     encoding_failures = 0
     while True:
         with _resource_lock:
@@ -177,7 +189,7 @@ def generate_frames():
                 ret, frame = cap.read()
                 if not ret or frame is None or frame.size == 0:
                     if not ret and _at_video_end():
-                        logger.info("Video processing completed: %s", VIDEO_PATH)
+                        logger.info("Video processing completed: %s", _active_video_source)
                     else:
                         logger.warning(
                             "Video read failed or returned an empty frame at frame %d; "
@@ -193,16 +205,10 @@ def generate_frames():
                 with _signal_lock:
                     frame_signal, signal_version = traffic_light, _signal_version
                 stage = "frame resizing"
-                frame = cv2.resize(frame, CROSSING_CONFIG.frame_size)
+                inference_frame = cv2.resize(frame, CROSSING_CONFIG.frame_size)
+                frame = inference_frame.copy()
                 stage = "vehicle inference"
-                # results[frame_nmr] = {}
-                # detect vehicles
-                detections = coco_model(frame)[0]
-                detections_ = []
-                for detection in detections.boxes.data.tolist():
-                    x1, y1, x2, y2, score, class_id = detection
-                    if int(class_id) in vehicles:
-                        detections_.append([x1, y1, x2, y2, score])
+                detections_array = detect_vehicles(coco_model, inference_frame, VEHICLE_DETECTION_CONFIG)
 
                 stage = "frame annotation"
                 # Draw line
@@ -211,7 +217,6 @@ def generate_frames():
 
                 # track vehicles
                 stage = "SORT tracking"
-                detections_array = np.asarray(detections_, dtype=float).reshape(-1, 5)
                 track_ids = mot_tracker.update(detections_array)
 
                 stage = "crossing evaluation"
@@ -259,7 +264,7 @@ def generate_frames():
                                if crossing_detector.events[car_id]['license_plate'] is None}
                 if pending_ocr:
                     stage = "license plate inference"
-                    license_plates = license_plate_detector_model(frame)[0]
+                    license_plates = license_plate_detector_model(inference_frame)[0]
                     for license_plate in license_plates.boxes.data.tolist():
                         x1, y1, x2, y2, score, class_id = license_plate
 
@@ -271,7 +276,7 @@ def generate_frames():
 
                             stage = "license plate preprocessing"
                             # crop license plate
-                            license_plate_crop = frame[int(y1):int(y2), int(x1): int(x2), :]
+                            license_plate_crop = inference_frame[int(y1):int(y2), int(x1): int(x2), :]
                             if license_plate_crop.size == 0:
                                 raise ValueError("License plate crop is empty")
 

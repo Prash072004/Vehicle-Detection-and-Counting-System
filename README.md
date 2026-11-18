@@ -12,6 +12,10 @@ Candidates are observations for review, not legally confirmed violations.
 ## Implemented features
 
 - YOLOv8 vehicle detection for cars, motorcycles, buses, and trucks.
+- Configurable confidence/inference size, validated/clipped vehicle boxes,
+  optional rectangular ROI, and clean images for vehicle/plate inference.
+- Startup selection of local video files or a webcam; standalone local-model
+  speed benchmarking and labeled-frame accuracy evaluation.
 - SORT tracking with the existing Kalman-filter and IoU association implementation.
 - Stateful movement-segment intersection with a configurable finite stop line.
 - Direction checks, jitter hysteresis, observation-gap and position-jump limits,
@@ -36,6 +40,7 @@ Crossings with uncertain signal timing do not create red-light candidates.
 ```text
 .
 |-- main.py                         Flask routes, startup, video pipeline
+|-- vehicle_detector.py             Vehicle configuration, filtering, ROI
 |-- violation_logic.py              Geometry, configuration, track/event state
 |-- util.py                         Plate association, OCR and utility helpers
 |-- add_missing_data.py             Standalone CSV interpolation helper
@@ -49,9 +54,16 @@ Crossings with uncertain signal timing do not create red-light candidates.
 |-- static/
 |   |-- style.css
 |   `-- js/script.js
+|-- tools/
+|   |-- benchmark_detection.py       Optional local model speed comparisons
+|   |-- evaluate_detection.py        Optional labeled-frame precision/recall
+|   `-- detection_common.py          Offline tool helpers
+|-- docs/phase3_detection.md         Configuration, benchmarking, dataset format
 `-- tests/
     |-- test_stability.py            34 stability checks
-    `-- test_violation_logic.py      52 geometry/integration checks
+    |-- test_violation_logic.py      52 geometry/integration checks
+    |-- test_vehicle_detection.py    Detection and application regressions
+    `-- test_detection_tools.py      Offline evaluation/benchmark checks
 ```
 
 The root and SORT `.gitignore` files are also tracked. Model weights, video,
@@ -106,6 +118,14 @@ for local demonstration, not a production deployment.
 The video does not loop automatically. EOF or a terminal processing error stops
 the shared processing session; restart the process to start another session.
 Other Flask routes remain available after video completion.
+
+Vehicle confidence defaults to the original effective `0.25`; inference size is
+`640` and ROI filtering is disabled. Optional startup environment settings select
+confidence, inference size, device, an existing compatible local vehicle model,
+local video or `webcam:N`. Configuration is read before resource initialization;
+restart to change an active session. The 720 x 480 processing and crossing
+coordinates remain unchanged. See [Phase 3 detection documentation](docs/phase3_detection.md)
+for settings, benchmark commands, accuracy dataset formats and limitations.
 
 ## Crossing configuration
 
@@ -163,8 +183,9 @@ With the local default video and model files present, run:
 .\myvenv\Scripts\python.exe -B -m unittest discover -s tests -v
 ```
 
-The suite contains 86 tests: 34 stability checks and 52 crossing/integration
-checks. Model and OCR inference are mocked in automated tests. Small real OpenCV
+The suite has 154 tests: the original 86 (34 stability and 52 crossing/integration
+checks), 38 Phase 3 detection checks, and 30 offline-tool checks. Model and OCR inference
+are mocked in automated tests. Small real OpenCV
 video/JPEG and SORT checks are included. Deterministic trajectories cover signal
 changes, finite endpoints, direction, jitter, missing observations, history
 expiration, deduplication, uncertain timing, and OCR enrichment.

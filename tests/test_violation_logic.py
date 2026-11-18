@@ -377,7 +377,7 @@ class CrossingIntegrationTests(unittest.TestCase):
         ]
         calls = []
 
-        def infer(frame):
+        def infer(frame, **kwargs):
             calls.append(None)
             if len(calls) == 2:
                 app.app.test_client().post('/set_light/green')
