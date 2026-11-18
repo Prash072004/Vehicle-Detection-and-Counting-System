@@ -1,0 +1,227 @@
+# Traffic Signal Violation Detection System
+
+A Flask-based computer vision prototype that detects vehicles in a prerecorded
+traffic video, tracks them with SORT, and creates a candidate when a vehicle
+crosses a finite stop line in the prohibited direction during a simulated red
+signal. License plate detection and EasyOCR can enrich that candidate.
+
+The signal is controlled manually from the web interface. It is not synchronized
+with a real traffic-light controller or the original timing of the recorded scene.
+Candidates are observations for review, not legally confirmed violations.
+
+## Implemented features
+
+- YOLOv8 vehicle detection for cars, motorcycles, buses, and trucks.
+- SORT tracking with the existing Kalman-filter and IoU association implementation.
+- Stateful movement-segment intersection with a configurable finite stop line.
+- Direction checks, jitter hysteresis, observation-gap and position-jump limits,
+  and conservative handling of unknown or changing signal timing.
+- One recorded crossing per SORT ID per processing session, with transient
+  position histories kept separately from candidate events.
+- Candidate IDs, crossing frame, intersection point, signal snapshot, and an
+  interpolated video timestamp when usable advancing metadata is available.
+- License plate detection and English OCR using the existing preprocessing and
+  recognition rules. Candidates persist when OCR returns no result.
+- A browser MJPEG stream, red/green controls, and a list of recognized plates.
+- Asset-path validation, bounded JPEG failure handling, EOF checks, diagnostic
+  logging, and process-owned video capture cleanup. Debug/reloading is disabled
+  by default when running `main.py` directly.
+
+A green crossing is not reclassified when the light later turns red. A first
+sighting already beyond the line is insufficient to establish a crossing.
+Crossings with uncertain signal timing do not create red-light candidates.
+
+## Source layout
+
+```text
+.
+|-- main.py                         Flask routes, startup, video pipeline
+|-- violation_logic.py              Geometry, configuration, track/event state
+|-- util.py                         Plate association, OCR and utility helpers
+|-- add_missing_data.py             Standalone CSV interpolation helper
+|-- visualize.py                    Standalone annotated-video helper
+|-- sort/
+|   |-- sort.py                     Vendored tracker implementation
+|   |-- requirements.txt            Historical tracker-only dependencies
+|   |-- README.md
+|   `-- LICENSE
+|-- templates/index.html
+|-- static/
+|   |-- style.css
+|   `-- js/script.js
+`-- tests/
+    |-- test_stability.py            34 stability checks
+    `-- test_violation_logic.py      52 geometry/integration checks
+```
+
+The root and SORT `.gitignore` files are also tracked. Model weights, video,
+virtual environments, benchmark datasets, caches, generated outputs, IDE files,
+local secrets, and the local PDF report are excluded from Git.
+
+## Environment and required local assets
+
+Validation used the supplied Python 3.8.10 environment. The application imports
+Flask, Ultralytics/PyTorch, OpenCV, cvzone, NumPy, EasyOCR, FilterPy, SciPy,
+Matplotlib, scikit-image, and Streamlit. Streamlit is imported by an existing
+helper in `util.py`, although the active interface uses Flask. The standalone
+visualizer additionally imports pandas.
+
+There is currently no complete application dependency manifest or lockfile.
+`sort/requirements.txt` covers only the older standalone SORT component; it is
+not a complete installation specification for this application. Provision a
+compatible environment separately rather than treating it as an application
+lockfile. The local `myvenv` directory is not distributed in this repository.
+
+Provide these existing, separately obtained assets at the following paths:
+
+```text
+models/yolov8n.pt
+models/license_plate_detector.pt
+video/sample.mp4
+```
+
+Both weight files and the default video are validated before resource startup.
+The application resolves these paths relative to `main.py`, independently of the
+terminal working directory. It does not substitute a webcam or alternative
+YOLO weights if an asset is missing.
+
+EasyOCR also needs its English detector/recognizer weights in its external cache
+(normally `~/.EasyOCR/model`). Its existing reader can download missing OCR
+assets during initialization; provision that cache in advance for offline use.
+No model weights or recordings are included in the repository.
+
+## Run locally
+
+From the project root, using the prepared Windows environment:
+
+```powershell
+.\myvenv\Scripts\python.exe -B main.py
+```
+
+Alternatively, use the equivalent Python executable from your own compatible
+environment. Open `http://127.0.0.1:5000/`, watch the stream, and use the existing
+red/green buttons to control the simulated signal. The built-in Flask server is
+for local demonstration, not a production deployment.
+
+The video does not loop automatically. EOF or a terminal processing error stops
+the shared processing session; restart the process to start another session.
+Other Flask routes remain available after video completion.
+
+## Crossing configuration
+
+Defaults are defined in `CrossingConfig` in `violation_logic.py` and instantiated
+as `CROSSING_CONFIG` in `main.py`. Coordinates refer to the resized processing
+image, not the original video resolution.
+
+| Setting | Default |
+| --- | --- |
+| Processing size | 720 x 480 |
+| Stop-line endpoints | (160, 320) to (550, 320) |
+| Prohibited direction | Downward |
+| Crossing anchor | Integer bottom-center minus 30 pixels vertically |
+| Hysteresis / endpoint tolerance | 2 pixels each |
+| Minimum directed movement | 2 pixels |
+| Maximum observation gap | 3 frame indices |
+| Maximum displacement between observations | 80 pixels |
+| Position-history expiration | More than 90 inactive frames |
+
+These are initial scene settings, not measured camera calibration. The anchor
+is an image-space approximation rather than a calibrated ground-contact point.
+The geometry also supports sloped lines and configurable cardinal directions.
+
+Every frame uses one signal snapshot and version. A signal transition between
+observations makes crossing timing uncertain. A crossing first observed within
+the hysteresis band can be accepted later after sufficient departure movement,
+using the signal and frame captured at the original intersection.
+
+## Routes and candidate lifecycle
+
+| Route | Response / behavior |
+| --- | --- |
+| `GET /` | Existing HTML interface |
+| `GET /video` | MJPEG with `boundary=frame`; HTTP 503 if initialization fails |
+| `POST /set_light/red` | Set simulated red, then redirect to `/` |
+| `POST /set_light/green` | Set simulated green, then redirect to `/` |
+| `GET /violations` | JSON list of recognized plate strings |
+
+A red crossing creates an in-memory candidate before OCR succeeds. Pending OCR
+may continue while that vehicle remains visible, including after the light turns
+green. Once a plate is recognized for the candidate, repeated recognition work
+for that candidate stops. OCR does not promote an event to a confirmed violation.
+
+The existing frontend polls `/violations` every 500 ms. This compatibility
+endpoint is not an event API: it omits candidates without recognized plates and
+returns remembered plate strings rather than a list of currently visible cars.
+Events and plate results are process-local; no database or permanent evidence
+storage is implemented.
+
+## Tests
+
+With the local default video and model files present, run:
+
+```powershell
+.\myvenv\Scripts\python.exe -B -m unittest discover -s tests -v
+```
+
+The suite contains 86 tests: 34 stability checks and 52 crossing/integration
+checks. Model and OCR inference are mocked in automated tests. Small real OpenCV
+video/JPEG and SORT checks are included. Deterministic trajectories cover signal
+changes, finite endpoints, direction, jitter, missing observations, history
+expiration, deduplication, uncertain timing, and OCR enrichment.
+
+Passing these tests does not establish field accuracy, plate-recognition
+accuracy, or legal validity. Those require labeled footage and camera-specific
+validation.
+
+## Known limitations
+
+- All viewers share one video capture and tracker. Processing is serialized per
+  frame, but frames are not broadcast independently to every client. This is a
+  single-viewer demonstration architecture.
+- SORT IDs may fragment or switch under occlusion. Deduplication by track ID
+  cannot fully deduplicate physical vehicles across ID changes.
+- Candidates and crossing records persist only for the process lifetime and
+  grow with the number of recorded tracks; there is no database persistence.
+- OCR retains the existing seven-character `AA00AAA`-shaped recognition rule and
+  fixed inverse threshold. Other plate formats are not supported by that rule.
+- Source, geometry, and thresholds require per-camera configuration. A
+  prerecorded video and wall-clock manual controls do not provide real-world
+  signal synchronization.
+- Yellow-light behavior, automatic signal recognition, re-identification,
+  evidence storage, authentication, and production deployment are not implemented.
+- The offline helpers are separate workflows. `add_missing_data.py` expects
+  `test.csv`; `visualize.py` expects `test_interpolated.csv` and a root-level
+  `sample.mp4`. The active Flask pipeline does not produce these CSV inputs.
+
+## Existing demonstration images
+
+These images are retained from earlier project documentation. They illustrate
+prior demonstrations and are not measurements of the current detector's accuracy.
+The recognized-plate display is in memory, not permanent storage.
+
+![Earlier startup demonstration](https://github.com/user-attachments/assets/c32c3231-9630-49bb-b685-66b83cdbbfee)
+
+![Flask traffic monitoring interface](https://github.com/user-attachments/assets/031d8b03-4b8e-4fcc-a6c3-534eeae095b9)
+
+![Earlier red-light highlighting demonstration](https://github.com/user-attachments/assets/e2cbd195-3b3d-4fe0-88d5-3945d34828b8)
+
+![License plate recognition demonstration](https://github.com/user-attachments/assets/018fb558-8142-4561-bf05-3914635b11bc)
+
+![Recognized plate list](https://github.com/user-attachments/assets/ec8cb04c-6403-4f60-906c-54cb988a6d44)
+
+## Project history and SORT attribution
+
+The existing GitHub history and the current application's history are preserved
+through a merge commit. The obsolete root-level `Car_Counter.py`, `sort.py`, and
+`mask.png` are absent from the latest tree; they remain retrievable from commit
+`da4652d540b08a921ff51ff1cac7ff5f378efa22`, for example:
+
+```powershell
+git show da4652d:Car_Counter.py
+```
+
+There is no `legacy/` copy. Removing root `sort.py` also prevents it from
+shadowing the active `sort/` package.
+
+The vendored SORT implementation retains its original attribution, documentation,
+and GPL license in `sort/sort.py`, `sort/README.md`, and `sort/LICENSE`.
