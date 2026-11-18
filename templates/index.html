@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SAI Prototype</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</head>
+<body>
+    <div class="main-container">
+        <div class="heading">
+        <h1>Traffic Signal Violation Detection System</h1>
+        <h2>(With License Plate recognition feature)</h3>
+    </div>
+
+    <div class="Video-Play">
+
+        <div class="video-wrapper">
+
+            <div class="video-container">
+                <img src="{{ url_for('video') }}" alt="Video will display here!">
+            </div>
+
+            <div class="traffic-light">
+                <div class="light red {% if light == 'red' %}active{% endif %}"></div>
+                <div class="light yellow {% if light == 'yellow' %}active{% endif %}"></div>
+                <div class="light green {% if light == 'green' %}active{% endif %}"></div>
+            </div>
+            <div class="control-data">
+                <div class="traffic-light-control">
+
+                <p>Current Light:
+                    <strong
+                      style="color: {% if light == 'red' %}#ff1744{% elif light == 'yellow' %}#ffeb3b{% elif light == 'green' %}#00e676{% else %}#FFC107{% endif %};">
+                      {{ light.upper() }}
+                    </strong>
+                </p>
+
+                <form action="/set_light/red" method="post">
+                    <button type="submit">Switch to RED</button>
+                </form>
+
+                <form action="/set_light/green" method="post">
+                    <button type="submit">Switch to GREEN</button>
+                </form>
+
+                </div>
+                <div class="data">
+                    <div class="violations-container">
+                        <h3>Current Violating Vehicles</h3>
+                        <ul id="violations-list">
+                            <li>Loading...</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+    </div>
+
+</body>
+</html>

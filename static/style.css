@@ -1,0 +1,228 @@
+body {
+    background: repeating-linear-gradient(
+        45deg,          /* angle of stripes */
+        #000000,        /* black stripe start */
+        #000000 20px,   /* black stripe width */
+        #FFC107 20px,   /* yellow stripe start */
+        #FFC107 40px    /* yellow stripe width */
+    );
+    background-attachment: fixed; /* keeps it steady when scrolling */
+    color: #fff; /* optional: makes text readable */
+    font-family: 'Poppins', sans-serif;
+}
+
+.main-container {
+    max-width: auto;
+    margin: 20px 20px;
+    background-color: #1e1e1e;          /* dark solid background for readability */
+    border: 3px solid #FFC107;          /* amber border */
+    border-radius: 20px;
+    padding: 30px;
+    box-shadow: 0 0 20px rgba(255, 193, 7, 0.4); /* soft amber glow */
+}
+
+.heading {
+    text-align: center;
+    background: #212121;
+    color: #FFC107;
+    padding: 5px 20px;
+    border-radius: 20px;
+    box-shadow: none;          /* no outer glow */
+    margin: 20px auto;
+    max-width: 850px;
+    font-family: 'Poppins', sans-serif;
+    border: 2px solid #FFC107;
+    box-shadow: 0 0 15px rgba(255, 193, 7, 0.2);
+
+}
+
+.heading h1 {
+    font-size: 2.4rem;
+    font-weight: 700;
+    letter-spacing: 1px;
+    margin-bottom: 8px;
+    color: #FFC107;
+    text-shadow: none;         /* no glow */
+}
+
+.heading h2 {
+    font-size: 1.3rem;
+    font-weight: 400;
+    color: #ffe082;
+    margin-top: 0;
+    text-shadow: none;         /* no glow */
+}
+
+.video-wrapper {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 40px; /* space between video and traffic light */
+    margin-top: 20px;
+}
+
+.video-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    border: 2px solid #FFC107; /* yellow shade */
+    border-radius: 5px;
+    width: 720px;
+    height: 480px;
+    background-color: #242425;
+    box-shadow: 0 0 15px rgba(255, 193, 7, 0.2);
+
+}
+
+.traffic-light {
+    width: 80px;
+    background-color: #333;
+    border-radius: 20px;
+    padding: 15px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-around;
+    align-items: center;
+    height: 220px;
+    box-shadow: 0 0 10px rgba(0,0,0,0.5);
+}
+
+.light {
+    width: 50px;
+    height: 50px;
+    border-radius: 50%;
+    background-color: #555;
+    opacity: 0.3;
+    transition: opacity 0.3s;
+}
+
+.light.red.active {
+    background-color: red;
+    opacity: 1;
+}
+
+.light.yellow.active {
+    background-color: yellow;
+    opacity: 1;
+}
+
+.light.green.active {
+    background-color: limegreen;
+    opacity: 1;
+}
+
+.control-data {
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    gap: 40px;
+    flex-wrap: wrap; /* responsive for smaller screens */
+    padding: 20px;
+    margin-top: 40px;
+}
+
+.traffic-light-control {
+    text-align: center;
+    margin-top: 0;
+    background: #212121;
+    padding: 20px;
+    border-radius: 15px;
+    border: 2px solid #FFC107;
+    color: #FFC107;
+    font-family: 'Poppins', sans-serif;
+    max-width: 400px;
+    margin-left: 5px;
+    box-shadow: 0 0 15px rgba(255, 193, 7, 0.2);
+}
+
+.traffic-light-control p {
+    font-size: 1.1rem;
+    margin-bottom: 15px;
+    color: #FFC107;
+}
+
+.traffic-light-control strong {
+    color: #ffe082;
+}
+
+.traffic-light-control form {
+    display: inline-block;
+    margin: 10px;
+}
+
+.traffic-light-control button {
+    background-color: transparent;
+    color: #FFC107;
+    border: 2px solid #FFC107;
+    padding: 10px 20px;
+    font-size: 1rem;
+    font-weight: 600;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+/* Hover effects */
+.traffic-light-control form[action*="red"] button:hover {
+    background-color: #d32f2f;
+    color: #fff;
+    border-color: #d32f2f;
+}
+
+.traffic-light-control form[action*="green"] button:hover {
+    background-color: #388e3c;
+    color: #fff;
+    border-color: #388e3c;
+}
+
+.data {
+    background: #212121;
+    border: 2px solid #FFC107;
+    border-radius: 15px;
+    width: 320px;
+    padding: 15px 20px;
+    top-margin: 5px;
+    color: #FFC107;
+    box-shadow: 0 0 15px rgba(255, 193, 7, 0.2);
+    text-align: center;
+}
+
+.violations-container h3 {
+    margin-bottom: 15px;
+    font-size: 1.3rem;
+    color: #FFC107;
+}
+
+.violations-container ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.violations-container li {
+    background: #333;
+    padding: 8px 12px;
+    margin-bottom: 6px;
+    border-radius: 6px;
+    color: #fff;
+    font-weight: 500;
+    text-align: center;
+    transition: background 0.3s;
+}
+
+.violations-container li:hover {
+    background: #444;
+}
+
+@media (max-width: 768px) {
+    .control-&-data {
+        flex-direction: column;
+        align-items: center;
+    }
+
+    .traffic-light-control, .data {
+        width: 90%;
+    }
+}
