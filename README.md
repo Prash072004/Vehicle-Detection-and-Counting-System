@@ -36,7 +36,9 @@ Candidates are observations for review, not legally confirmed violations.
 - A browser MJPEG stream, red/green controls, and a list of recognized plates.
 - Asset-path validation, bounded JPEG failure handling, EOF checks, diagnostic
   logging, and process-owned video capture cleanup. A single processing thread
-  broadcasts the latest JPEG to all viewers; Uvicorn uses one worker without reload.
+  broadcasts the latest JPEG to all viewers using coalesced notifications; Uvicorn
+  uses one worker without reload. Optional private stage/resource profiling,
+  source-timestamp playback pacing and full-pipeline benchmark reports are available.
 
 A green crossing is not reclassified when the light later turns red. A first
 sighting already beyond the line is insufficient to establish a crossing.
@@ -49,6 +51,8 @@ Crossings with uncertain signal timing do not create red-light candidates.
 |-- main.py                         Entry point and compatible CV pipeline API
 |-- web_api.py                      FastAPI routes, templates and lifespan
 |-- processing_service.py           Single processing owner, bounded broadcast
+|-- performance_monitor.py          Private bounded timings and source pacing
+|-- pipeline_profiling.py           Optional reversible stage instrumentation
 |-- requirements.txt                Tested Windows/Python 3.8 dependency pins
 |-- vehicle_detector.py             Vehicle configuration, filtering, ROI
 |-- tracking_manager.py             SORT settings, lifecycle, observed outputs
@@ -70,6 +74,7 @@ Crossings with uncertain signal timing do not create red-light candidates.
 |   |-- style.css
 |   `-- js/script.js
 |-- tools/
+|   |-- benchmark_pipeline.py        Isolated full-pipeline trials and reports
 |   |-- benchmark_detection.py       Optional local model speed comparisons
 |   |-- evaluate_detection.py        Optional labeled-frame precision/recall
 |   |-- benchmark_tracking.py        Fixed-detection parameter replay
@@ -83,6 +88,7 @@ Crossings with uncertain signal timing do not create red-light candidates.
 |-- docs/phase5_ocr.md               OCR settings, evidence, diagnostics and tools
 |-- docs/phase6_storage.md           SQLite, evidence, review, export and retention
 |-- docs/phase7_fastapi_migration.md  ASGI lifecycle, viewers, setup and verification
+|-- docs/phase8_performance.md        Measured bottlenecks, pacing and profiling
 `-- tests/
     |-- test_stability.py            34 stability checks
     |-- test_violation_logic.py      52 geometry/integration checks
@@ -96,7 +102,9 @@ Crossings with uncertain signal timing do not create red-light candidates.
     |-- test_violation_storage.py   Session persistence and application hooks
     |-- test_evidence.py            Clean-frame files, hashes and boundaries
     |-- test_violation_export.py    Selected exports and privacy defaults
-    `-- test_fastapi.py             ASGI lifecycle, broadcasting and persistence
+    |-- test_fastapi.py             ASGI lifecycle, broadcasting and persistence
+    |-- test_performance.py         Timing, pacing, counters and notifications
+    `-- test_pipeline_benchmark.py  Tool validation and trace comparisons
 ```
 
 The root and SORT `.gitignore` files are also tracked. Model weights, video,
@@ -262,6 +270,51 @@ Evidence capture defaults off; enable `TRAFFIC_EVIDENCE_ENABLED=true` only for a
 authorized local run. See [Phase 6 storage documentation](docs/phase6_storage.md)
 for configuration, privacy, failure recovery, exports and explicit retention.
 
+## Performance and playback
+
+Source video is processed in order, with no automatic frame sampling. Playback
+now waits for source timing when processing is faster than valid source FPS;
+slow inference remains processing-limited. Unknown/invalid FPS is reported and
+falls back to unpaced operation. The benchmark explicitly uses unpaced mode.
+Live capture/backend queues can still add latency; no hidden frame-dropping
+strategy was introduced. The private processing snapshot reports when measured
+throughput cannot keep up with the known source FPS.
+
+Optional startup settings (restart to change):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `TRAFFIC_PROFILE` | `false` | Enable private bounded stage/resource profiling |
+| `TRAFFIC_PROFILE_EVERY` | `1` | Time every Nth frame, range 1-1000 |
+| `TRAFFIC_PROFILE_WINDOW` | `512` | Recent samples per stage, range 16-4096 |
+| `TRAFFIC_MONITOR_SECONDS` | `1` | Resource-sampling interval, range 0.1-60 seconds |
+| `TRAFFIC_JPEG_QUALITY` | `95` | Display stream quality, range 1-100; evidence stays 95 |
+| `TRAFFIC_PACING` | `source` | `source` playback or explicit `unpaced` throughput |
+
+Inference device/image size and OCR settings retain their existing variables
+and defaults. An application CPU-thread override was evaluated and discarded
+because it was slower; `--cpu-threads` exists only for isolated benchmark trials.
+No PyTorch inference-mode wrapper was added: installed Ultralytics already uses it.
+
+For a repeated local CPU benchmark, with existing cached weights:
+
+```powershell
+.\myvenv\Scripts\python.exe -B tools/benchmark_pipeline.py --reference current --frames 60 --warmup 3 --trials 3 --profile --output outputs/my_pipeline.json --csv outputs/my_pipeline.csv
+```
+
+Each trial runs in a fresh subprocess; no two inference trials compete. The tool
+blocks network connections, uses separate test storage under ignored `outputs/`,
+keeps frames ordered, and compares detections, observed tracks and normalized
+crossing attributes. Report paths must be new files under `outputs/`. Reports
+include no recognized plate text. The reference options `phase7` and `flask`
+read fixed existing local commits; they do not rewrite history or check out code.
+Historical Flask comparison requires the already-installed Flask package.
+
+Notifications reduced observed encoding-to-ASGI delivery delay, but throughput
+varied substantially with local conditions. No general FPS speedup or real-time
+capture guarantee is claimed. See [Phase 8 measurements](docs/phase8_performance.md)
+for repeated trials, stage costs, rejected tuning and remaining limitations.
+
 ## Tests
 
 With the local default video and model files present, run:
@@ -270,8 +323,11 @@ With the local default video and model files present, run:
 .\myvenv\Scripts\python.exe -B -m unittest discover -s tests -v
 ```
 
-The suite has **445 tests**: all 412 Phase 1-6 tests (only framework-specific
-client/startup assertions adapted), plus 33 FastAPI/producer/concurrency tests.
+The suite has **502 tests**: all 445 Phase 1-7 tests plus 57 performance,
+configuration, pacing, bounded-notification and benchmark validation checks.
+One existing concurrency
+test now explicitly waits for its producer barrier before asserting it; all
+its original assertions remain.
 New checks cover lifespan, one-owner broadcasting, slow/disconnected viewers,
 loop responsiveness, current-session JSON, and single-session SQLite/OCR/evidence.
 Existing application fixtures

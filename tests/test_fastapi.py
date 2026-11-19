@@ -473,7 +473,10 @@ class ASGIConcurrentTests(FastAPIFixture):
             async with self.app.app.router.lifespan_context(self.app.app):
                 tasks=[asyncio.create_task(viewer(0)),asyncio.create_task(viewer(1))]
                 try:
-                    await until(lambda: len(bodies[0])==1 and len(bodies[1])==1)
+                    # Notification delivery can now precede the producer's
+                    # next generator step. Synchronize on the blocked work
+                    # explicitly before testing independent request handling.
+                    await until(lambda: len(bodies[0])==1 and len(bodies[1])==1 and entered.is_set())
                     self.assertTrue(entered.is_set())
                     self.assertEqual(self.app.app.state.processing.viewers,2)
                     import httpx

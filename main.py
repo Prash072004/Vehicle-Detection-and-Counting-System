@@ -16,6 +16,8 @@ from vehicle_detector import DetectionConfig, detect_vehicles, project_path, res
 from tracking_manager import TrackingConfig, TrackingManager, sanitize_tracks
 from plate_recognition import OCRConfig, OCRManager, preprocess, safe_crop, valid_box, probability
 from violation_storage import StorageConfig, ViolationStorage
+from performance_monitor import PerformanceConfig, PerformanceMonitor, FramePacer
+from pipeline_profiling import PipelineInstrumentation
 
 
 logger = logging.getLogger(__name__)
@@ -31,6 +33,10 @@ VEHICLE_DETECTION_CONFIG = DetectionConfig()
 TRACKING_CONFIG = TrackingConfig()
 OCR_CONFIG = OCRConfig()
 STORAGE_CONFIG = StorageConfig()
+PERFORMANCE_CONFIG = PerformanceConfig()
+performance = PerformanceMonitor(PERFORMANCE_CONFIG)
+_performance_instrumentation = None
+_processing_stop = None
 storage_service = None
 _storage_owner = None
 crossing_detector = CrossingDetector(CROSSING_CONFIG)
@@ -93,6 +99,7 @@ def initialize_resources():
     global TRACKING_CONFIG
     global OCR_CONFIG, ocr_manager, _ocr_owner
     global STORAGE_CONFIG, storage_service, _storage_owner
+    global PERFORMANCE_CONFIG
 
     with _resource_lock:
         if _initialization_error is not None:
@@ -102,6 +109,7 @@ def initialize_resources():
 
         capture = None
         try:
+            PERFORMANCE_CONFIG = PerformanceConfig.from_environment(PERFORMANCE_CONFIG)
             detection_config = DetectionConfig.from_environment(VEHICLE_DETECTION_CONFIG)
             tracking_config = TrackingConfig.from_environment(TRACKING_CONFIG)
             ocr_config = OCRConfig.from_environment(OCR_CONFIG)
@@ -176,6 +184,8 @@ def shutdown_resources(status='stopped'):
             service.finish(crossing_detector.events,status)
         if ocr_manager is not None:
             ocr_manager.clear()
+        if _performance_instrumentation is not None:
+            _performance_instrumentation.close()
 
 
 def _recognizer():
@@ -232,6 +242,12 @@ def generate_frames():
     # Only ProcessingService consumes this generator in the web application.
     # Keep the lock scoped to one frame and release it before broadcasting.
     encoding_failures = 0
+    try:
+        source_fps = float(cap.get(cv2.CAP_PROP_FPS)) if cap is not None else None
+    except (TypeError, ValueError, cv2.error):
+        source_fps = None
+    pacer = FramePacer(PERFORMANCE_CONFIG.pacing,source_fps,_processing_stop)
+    performance.source_fps = pacer.fps
     while True:
         with _resource_lock:
             if _processing_finished or cap is None:
@@ -261,7 +277,8 @@ def generate_frames():
                     frame_signal, signal_version = traffic_light, _signal_version
                 stage = "frame resizing"
                 inference_frame = cv2.resize(frame, CROSSING_CONFIG.frame_size)
-                frame = inference_frame.copy()
+                with performance.span('frame_preparation'):
+                    frame = inference_frame.copy()
                 stage = "vehicle inference"
                 detections_array = detect_vehicles(coco_model, inference_frame, VEHICLE_DETECTION_CONFIG)
 
@@ -422,7 +439,11 @@ def generate_frames():
                 if frame is None or frame.size == 0:
                     raise ValueError("Cannot encode an empty frame")
                 try:
-                    encoded, buffer = cv2.imencode('.jpg', frame)
+                    if PERFORMANCE_CONFIG.jpeg_quality == 95:
+                        encoded, buffer = cv2.imencode('.jpg', frame)
+                    else:
+                        encoded, buffer = cv2.imencode('.jpg', frame,
+                            [cv2.IMWRITE_JPEG_QUALITY,PERFORMANCE_CONFIG.jpeg_quality])
                 except cv2.error as error:
                     logger.warning("JPEG encoding raised at frame %d: %s", frame_nmr, error)
                     encoded, buffer = False, None
@@ -444,6 +465,9 @@ def generate_frames():
                 shutdown_resources(status='failed')
                 return
 
+        with performance.span('pacing'):
+            if pacer.pace(frame_nmr,timestamp_ms):
+                return
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + jpeg + b'\r\n')
 
@@ -455,7 +479,10 @@ def _start_processing():
     global storage_service, _storage_owner, ocr_manager, _ocr_owner
     global crossing_detector, _frame_index, _last_video_timestamp_ms
     global traffic_light, _signal_version
+    global performance, PERFORMANCE_CONFIG, _performance_instrumentation
     with _resource_lock:
+        PERFORMANCE_CONFIG = PerformanceConfig.from_environment(PERFORMANCE_CONFIG)
+        performance = PerformanceMonitor(PERFORMANCE_CONFIG)
         if _processing_finished:
             _initialized = False
             _processing_finished = False
@@ -469,6 +496,7 @@ def _start_processing():
             with _signal_lock:
                 traffic_light, _signal_version = 'green', 0
         initialize_resources()
+        _performance_instrumentation = PipelineInstrumentation(globals(),performance).install()
 
 
 def create_app():

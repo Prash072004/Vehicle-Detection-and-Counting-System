@@ -34,6 +34,10 @@ class ProcessingService:
         self._latest = None
         self._sequence = 0
         self._viewers = 0
+        self._waiters = {}
+        self.monitor = None
+        self._first_publication_ns = None
+        self._last_publication_ns = None
 
     @property
     def completed(self):
@@ -75,12 +79,26 @@ class ProcessingService:
             self._activate.wait()
             if not self._stop.is_set():
                 iterator = iter(self.frames())
-                for chunk in iterator:
+                while not self._stop.is_set():
+                    try:
+                        chunk = next(iterator)
+                    except StopIteration:
+                        break
                     if self._stop.is_set():
                         break
+                    monitor = self.monitor
+                    tick = time.perf_counter_ns() if monitor is not None and monitor.enabled else None
                     with self._lock:
                         self._sequence += 1
-                        self._latest = (self._sequence, chunk, time.monotonic())
+                        published = time.perf_counter_ns()
+                        if self._first_publication_ns is None:self._first_publication_ns=published
+                        self._last_publication_ns=published
+                        acquisition = monitor.last_acquisition_ns if monitor is not None and monitor.enabled else None
+                        self._latest = (self._sequence, chunk, (published, acquisition))
+                    self._notify()
+                    if tick is not None:
+                        monitor.record('publication', time.perf_counter_ns()-tick)
+                        monitor.count('published')
         except BaseException as error:
             self._error = error
             if not self._ready.is_set():
@@ -99,31 +117,71 @@ class ProcessingService:
                 finally:
                     with self._lock:
                         self._done = True
+                    self._notify()
                     _process_owner.release()
                     self._ready.set()
 
-    async def subscribe(self):
-        # No blocking condition wait occupies an AnyIO thread per viewer. This
-        # brief polling targets 10 ms between checks; actual delivery also
-        # depends on event-loop scheduling and client/network backpressure.
+    def _notify(self):
+        # At most one scheduled callback per subscriber, even if its loop is
+        # stalled or its response is under network backpressure. No frame queue.
         with self._lock:
-            sequence = self._sequence if self._done else 0
-            self._viewers += 1
+            pending=[]
+            for token, waiter in self._waiters.items():
+                if not waiter['queued'] and not waiter['signaled']:
+                    waiter['queued']=True
+                    pending.append((token,waiter['loop']))
+        for token,loop in pending:
+            try:
+                loop.call_soon_threadsafe(self._wake, token)
+            except RuntimeError:
+                with self._lock:
+                    self._waiters.pop(token,None)
+                    self._viewers=len(self._waiters)
+
+    def _wake(self,token):
+        with self._lock:
+            waiter=self._waiters.get(token)
+            if waiter is None: return
+            waiter['queued']=False
+            waiter['signaled']=True
+            event=waiter['event']
+        event.set()
+
+    async def subscribe(self):
+        loop=asyncio.get_running_loop();event=asyncio.Event();token=object()
+        with self._lock:
+            # Deliver the latest frame immediately to a new viewer, but do not
+            # count frames produced before it connected as subscriber skips.
+            sequence = self._sequence if self._done or self._latest is None else self._sequence-1
+            self._waiters[token]={'loop':loop,'event':event,'queued':False,'signaled':False}
+            self._viewers=len(self._waiters)
         self._activate.set()
         try:
             while True:
                 with self._lock:
+                    event.clear()
+                    waiter=self._waiters.get(token)
+                    if waiter is not None: waiter['signaled']=False
                     latest, done = self._latest, self._done
                 if latest is not None and latest[0] > sequence:
+                    monitor=self.monitor
+                    if monitor is not None and monitor.enabled:
+                        now=time.perf_counter_ns()
+                        monitor.record('subscriber_delay',max(0,now-latest[2][0]))
+                        if latest[2][1] is not None:
+                            monitor.record('acquisition_to_subscriber',max(0,now-latest[2][1]))
+                        monitor.count('delivered')
+                        monitor.count('subscriber_skipped',max(0,latest[0]-sequence-1))
                     sequence = latest[0]
                     yield latest[1]
                 elif done:
                     return
                 else:
-                    await asyncio.sleep(self.poll_interval)
+                    await event.wait()
         finally:
             with self._lock:
-                self._viewers -= 1
+                self._waiters.pop(token,None)
+                self._viewers=len(self._waiters)
 
     def stop(self):
         self._stop.set()
@@ -137,3 +195,17 @@ class ProcessingService:
                 # Never release a capture underneath native inference, or allow
                 # a second owner to start while the old owner is still running.
                 raise RuntimeError('Processing worker did not stop within the shutdown timeout')
+
+    def snapshot(self):
+        """Private operational state; deliberately not an HTTP endpoint."""
+        with self._lock:
+            state={'active_viewers':self._viewers,'publication_count':self._sequence,
+                   'buffered_frames':int(self._latest is not None),'processing_queue_depth':0,
+                   'notification_callbacks_pending':sum(int(w['queued']) for w in self._waiters.values()),
+                   'detection_frames_skipped':0,'completed':self._done}
+            duration=(self._last_publication_ns-self._first_publication_ns) if self._sequence>1 else 0
+            state['processing_fps']=((self._sequence-1)*1e9/duration) if duration>0 else None
+            state['source_fps']=self.monitor.source_fps if self.monitor is not None else None
+            state['processing_cannot_keep_up']=(state['processing_fps']<state['source_fps']) if state['source_fps'] and state['processing_fps'] is not None else None
+        if self.monitor is not None:state['performance']=self.monitor.snapshot()
+        return state

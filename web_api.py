@@ -21,9 +21,13 @@ class SignalColor(str, Enum):
 def create_app(runtime):
     """Callbacks look up live pipeline state so mocks need no actual weights."""
     def service():
-        return ProcessingService(lambda: runtime['_start_processing'](),
-                                 lambda: runtime['generate_frames'](),
-                                 lambda: runtime['shutdown_resources']())
+        def startup():
+            runtime['_processing_stop']=owner._stop
+            runtime['_start_processing']()
+            owner.monitor=runtime.get('performance')
+        owner = ProcessingService(startup,lambda: runtime['generate_frames'](),
+                                  lambda: runtime['shutdown_resources']())
+        return owner
 
     @asynccontextmanager
     async def lifespan(app):

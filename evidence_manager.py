@@ -2,6 +2,7 @@
 from collections import deque
 from dataclasses import dataclass
 import hashlib
+from contextlib import nullcontext
 import os
 import re
 from pathlib import Path
@@ -110,7 +111,9 @@ class EvidenceManager:
         created = False
         try:
             path = self._path(relative)
-            ok,encoded = cv2.imencode('.jpg',image,[cv2.IMWRITE_JPEG_QUALITY,95])
+            monitor = getattr(self,'performance',None)
+            with monitor.span('evidence_encode') if monitor is not None else nullcontext():
+                ok,encoded = cv2.imencode('.jpg',image,[cv2.IMWRITE_JPEG_QUALITY,95])
             if not ok or encoded is None or not encoded.size:
                 raise OSError('Image encoding failed')
             data = encoded.tobytes()
@@ -118,11 +121,12 @@ class EvidenceManager:
             path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
             self._path(relative)  # Recheck after directory creation.
             try:
-                with path.open('xb') as handle:
-                    created = True
-                    handle.write(data)
-                    handle.flush()
-                    os.fsync(handle.fileno())
+                with monitor.span('evidence_write') if monitor is not None else nullcontext():
+                    with path.open('xb') as handle:
+                        created = True
+                        handle.write(data)
+                        handle.flush()
+                        os.fsync(handle.fileno())
             except FileExistsError:
                 # Retry can reuse an identical generated file; it cannot replace it.
                 if hashlib.sha256(path.read_bytes()).hexdigest()!=digest:
