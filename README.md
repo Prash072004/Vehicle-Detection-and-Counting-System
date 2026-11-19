@@ -29,6 +29,10 @@ Candidates are observations for review, not legally confirmed violations.
 - Plate detection and English OCR with configurable Indian/legacy syntax,
   confidence ranking, safe crops, conservative association, bounded event
   consensus and retry scheduling. Candidates persist when OCR returns no result.
+- SQLite candidate records with processing sessions, immutable crossing metadata,
+  accepted OCR enrichment, local review/correction history, filtering and exports.
+- Optional bounded clean-frame evidence capture with relative references and
+  integrity hashes; disabled by default. Retention is an explicit local operation.
 - A browser MJPEG stream, red/green controls, and a list of recognized plates.
 - Asset-path validation, bounded JPEG failure handling, EOF checks, diagnostic
   logging, and process-owned video capture cleanup. Debug/reloading is disabled
@@ -46,6 +50,9 @@ Crossings with uncertain signal timing do not create red-light candidates.
 |-- vehicle_detector.py             Vehicle configuration, filtering, ROI
 |-- tracking_manager.py             SORT settings, lifecycle, observed outputs
 |-- plate_recognition.py            Plate syntax, crops, association, event OCR
+|-- database.py                     SQLite schema, records, review and queries
+|-- violation_storage.py            Session persistence, retries and retention
+|-- evidence_manager.py             Bounded clean-frame evidence capture
 |-- violation_logic.py              Geometry, configuration, track/event state
 |-- util.py                         Plate association, OCR and utility helpers
 |-- add_missing_data.py             Standalone CSV interpolation helper
@@ -66,10 +73,12 @@ Crossings with uncertain signal timing do not create red-light candidates.
 |   |-- evaluate_tracking.py         Labeled identity metrics
 |   |-- benchmark_ocr.py             Identical-crop preprocessing comparisons
 |   |-- evaluate_ocr.py              Labeled crop exact match, CER, acceptance
+|   |-- export_violations.py         Selected local records, JSON/CSV
 |   `-- detection_common.py          Offline tool helpers
 |-- docs/phase3_detection.md         Configuration, benchmarking, dataset format
 |-- docs/phase4_tracking.md          Tracking lifecycle, metrics and experiments
 |-- docs/phase5_ocr.md               OCR settings, evidence, diagnostics and tools
+|-- docs/phase6_storage.md           SQLite, evidence, review, export and retention
 `-- tests/
     |-- test_stability.py            34 stability checks
     |-- test_violation_logic.py      52 geometry/integration checks
@@ -78,7 +87,11 @@ Crossings with uncertain signal timing do not create red-light candidates.
     |-- test_tracking.py            SORT safety, lifecycle and integration
     |-- test_tracking_tools.py      Identity metrics and fixed-input replays
     |-- test_plate_recognition.py   OCR rules, geometry, evidence, integration
-    `-- test_ocr_tools.py           Known-label metrics and offline crop replay
+    |-- test_ocr_tools.py           Known-label metrics and offline crop replay
+    |-- test_database.py            Schema, transactions, records and review
+    |-- test_violation_storage.py   Session persistence and application hooks
+    |-- test_evidence.py            Clean-frame files, hashes and boundaries
+    `-- test_violation_export.py    Selected exports and privacy defaults
 ```
 
 The root and SORT `.gitignore` files are also tracked. Model weights, video,
@@ -93,6 +106,7 @@ Matplotlib/scikit-image are optional SORT demo dependencies; Streamlit is loaded
 only by the optional `util.load_model` helper. The standalone visualizer imports
 pandas. EasyOCR initializes lazily using existing cached weights, with downloads
 disabled; missing assets fail explicitly rather than downloading models.
+Persistent storage uses Python's built-in `sqlite3`; no new package is required.
 
 There is currently no complete application dependency manifest or lockfile.
 `sort/requirements.txt` covers only the older standalone SORT component; it is
@@ -204,8 +218,13 @@ counters, scheduling, format limitations, tool schemas and measured results.
 The existing frontend polls `/violations` every 500 ms. This compatibility
 endpoint is not an event API: it omits candidates without recognized plates and
 returns remembered plate strings rather than a list of currently visible cars.
-Events and plate results are process-local; no database or permanent evidence
-storage is implemented.
+The public plate list remains process-local and does not reveal stored history.
+Candidate records now persist by default in ignored `data/violations.db`, including
+events without plates. Database failure retains in-memory candidates with explicit
+failure diagnostics and bounded retries. Review/history are local backend operations.
+Evidence capture defaults off; enable `TRAFFIC_EVIDENCE_ENABLED=true` only for an
+authorized local run. See [Phase 6 storage documentation](docs/phase6_storage.md)
+for configuration, privacy, failure recovery, exports and explicit retention.
 
 ## Tests
 
@@ -215,9 +234,10 @@ With the local default video and model files present, run:
 .\myvenv\Scripts\python.exe -B -m unittest discover -s tests -v
 ```
 
-The suite has 319 tests: all 219 Phase 1-4 tests (34 stability, 52 crossing/
-integration, 38 detection, 30 detection-tool, 39 tracking and 26 tracking-tool
-checks), plus 100 Phase 5 OCR/application/tool checks. Model and OCR inference
+The suite has 412 tests: all 319 Phase 1-5 tests, plus 93 Phase 6 database,
+storage/application, evidence and export checks. Existing application fixtures
+explicitly disable production storage; new storage tests use temporary databases.
+Model and OCR inference
 are mocked in automated tests. Small real OpenCV
 video/JPEG and SORT checks are included. Deterministic trajectories cover signal
 changes, finite endpoints, direction, jitter, missing observations, history
@@ -234,8 +254,9 @@ validation.
   single-viewer demonstration architecture.
 - SORT IDs may fragment or switch under occlusion. Deduplication by track ID
   cannot fully deduplicate physical vehicles across ID changes.
-- Candidates and crossing records persist only for the process lifetime and
-  grow with the number of recorded tracks; there is no database persistence.
+- Runtime candidate/crossing memory still grows with the number of recorded tracks.
+  SQLite stores historical records, but storage failures cannot guarantee durability.
+  There is no secondary durable outbox or automatic retention cleanup.
 - OCR supports selected Indian layouts, BH-series and optional legacy syntax,
   not all legal registrations. Low-resolution, split-line and ambiguous reads
   can remain unreadable. The default fixed threshold is configurable; without
@@ -243,8 +264,10 @@ validation.
 - Source, geometry, and thresholds require per-camera configuration. A
   prerecorded video and wall-clock manual controls do not provide real-world
   signal synchronization.
+- Evidence is opt-in local storage, not an atomic signed evidence bundle. Local
+  OS permissions protect records; no authenticated public review interface is provided.
 - Yellow-light behavior, automatic signal recognition, re-identification,
-  evidence storage, authentication, and production deployment are not implemented.
+  authentication and production deployment are not implemented.
 - The offline helpers are separate workflows. `add_missing_data.py` expects
   `test.csv`; `visualize.py` expects `test_interpolated.csv` and a root-level
   `sample.mp4`. The active Flask pipeline does not produce these CSV inputs.

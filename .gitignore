@@ -52,6 +52,18 @@ results/
 *.sqlite
 *.sqlite3
 
+# Local violation evidence and SQLite transaction/sidecar files
+/evidence/
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+
 # Local secrets, credentials, and machine-specific configuration
 .env
 .env.*

@@ -2,6 +2,7 @@ import atexit
 import logging
 import os
 import time
+from dataclasses import asdict
 from pathlib import Path
 from threading import Lock, RLock
 
@@ -13,6 +14,7 @@ from violation_logic import CrossingConfig, CrossingDetector
 from vehicle_detector import DetectionConfig, detect_vehicles, project_path, resolve_video_source
 from tracking_manager import TrackingConfig, TrackingManager, sanitize_tracks
 from plate_recognition import OCRConfig, OCRManager, preprocess, safe_crop, valid_box, probability
+from violation_storage import StorageConfig, ViolationStorage
 
 
 app = Flask(__name__)
@@ -28,6 +30,9 @@ CROSSING_CONFIG = CrossingConfig()
 VEHICLE_DETECTION_CONFIG = DetectionConfig()
 TRACKING_CONFIG = TrackingConfig()
 OCR_CONFIG = OCRConfig()
+STORAGE_CONFIG = StorageConfig()
+storage_service = None
+_storage_owner = None
 crossing_detector = CrossingDetector(CROSSING_CONFIG)
 ocr_manager = None
 _ocr_owner = None
@@ -87,6 +92,7 @@ def initialize_resources():
     global _active_video_source
     global TRACKING_CONFIG
     global OCR_CONFIG, ocr_manager, _ocr_owner
+    global STORAGE_CONFIG, storage_service, _storage_owner
 
     with _resource_lock:
         if _initialization_error is not None:
@@ -99,6 +105,7 @@ def initialize_resources():
             detection_config = DetectionConfig.from_environment(VEHICLE_DETECTION_CONFIG)
             tracking_config = TrackingConfig.from_environment(TRACKING_CONFIG)
             ocr_config = OCRConfig.from_environment(OCR_CONFIG)
+            storage_config = StorageConfig.from_environment(STORAGE_CONFIG)
             detection_config.roi.validate_frame(CROSSING_CONFIG.frame_size)
             source = resolve_video_source(os.environ.get('TRAFFIC_VIDEO_SOURCE', VIDEO_PATH), PROJECT_ROOT)
             vehicle_path = project_path(os.environ.get('TRAFFIC_VEHICLE_MODEL', VEHICLE_MODEL_PATH), PROJECT_ROOT)
@@ -140,6 +147,13 @@ def initialize_resources():
         crossing_detector = CrossingDetector(CROSSING_CONFIG)
         ocr_manager = OCRManager(ocr_config)
         _ocr_owner = crossing_detector
+        STORAGE_CONFIG = storage_config
+        storage_service = ViolationStorage(storage_config,source,CROSSING_CONFIG.frame_size,
+            {'crossing':asdict(CROSSING_CONFIG),'vehicle_detection':asdict(detection_config),
+             'tracking':asdict(tracking_config),'ocr':asdict(ocr_config),
+             'models':{'vehicle':vehicle_path.name,'plate':PLATE_MODEL_PATH.name}},ocr_config)
+        _storage_owner = crossing_detector
+        storage_service.start()
         _frame_index = -1
         _last_video_timestamp_ms = None
         _initialized = True
@@ -148,7 +162,7 @@ def initialize_resources():
         logger.info("Plate recognition settings: %s", ocr_config)
 
 
-def shutdown_resources():
+def shutdown_resources(status='stopped'):
     """Stop the shared source at EOF, a terminal error, or process shutdown."""
     global cap, _processing_finished
     with _resource_lock:
@@ -157,6 +171,9 @@ def shutdown_resources():
         _release_capture(capture)
         if isinstance(mot_tracker, TrackingManager):
             mot_tracker.clear()
+        service = _storage()
+        if service is not None:
+            service.finish(crossing_detector.events,status)
         if ocr_manager is not None:
             ocr_manager.clear()
 
@@ -168,6 +185,11 @@ def _recognizer():
         ocr_manager = OCRManager(OCR_CONFIG)
         _ocr_owner = crossing_detector
     return ocr_manager
+
+
+def _storage():
+    # A processing session owns its store; independent sessions cannot reuse it.
+    return storage_service if _storage_owner is crossing_detector else None
 
 
 def _at_video_end():
@@ -221,13 +243,15 @@ def generate_frames():
                 if not ret or frame is None or frame.size == 0:
                     if not ret and _at_video_end():
                         logger.info("Video processing completed: %s", _active_video_source)
+                        session_status = 'completed'
                     else:
                         logger.warning(
                             "Video read failed or returned an empty frame at frame %d; "
                             "stopping without retrying an unknown source position",
                             frame_nmr,
                         )
-                    shutdown_resources()
+                        session_status = 'failed'
+                    shutdown_resources(status=session_status)
                     return
                 _frame_index = frame_nmr
                 timestamp_ms = _video_timestamp_ms()
@@ -258,6 +282,9 @@ def generate_frames():
                                      mot_tracker.expired_ids, sorted(invalid_ids))
 
                 stage = "crossing evaluation"
+                storage = _storage()
+                if storage is not None:
+                    storage.before_frame(frame_nmr,timestamp_ms,inference_frame,track_ids)
                 recognition = _recognizer()
                 recognition.expire(frame_nmr, crossing_detector.events)
                 crossing_detector.expire(frame_nmr)
@@ -280,6 +307,8 @@ def generate_frames():
                         car_id, (x1, y1, x2, y2), frame_nmr, frame_signal,
                         signal_version, timestamp_ms,
                     )
+                    if storage is not None and observation['event'] is not None:
+                        storage.candidate(observation['event'],frame_nmr)
                     if observation['anchor'] is None:
                         if car_id in crossing_detector.events:
                             recognition.invalidate(crossing_detector.events[car_id])
@@ -378,12 +407,16 @@ def generate_frames():
                         selected = recognition.record(event, frame_nmr, reading, score)
                         if selected and crossing_detector.enrich_event(car_id, *selected):
                             plate_memory[car_id] = event['license_plate']
+                            if storage is not None:
+                                storage.capture_plate(event,crop,frame_nmr,timestamp_ms)
                     for car_id in pending_ocr - crops.keys():
                         meta = recognition.metadata(crossing_detector.events[car_id])
                         if meta['status'] == 'not_attempted':
                             meta.update(status='unreadable', reason='no_usable_associated_plate')
                 if frame_nmr % 60 == 0 and logger.isEnabledFor(logging.DEBUG):
                     logger.debug('OCR stage counts: %s', dict(recognition.counts))
+                if storage is not None:
+                    storage.sync(crossing_detector.events,frame_nmr)
 
                 stage = "JPEG encoding"
                 if frame is None or frame.size == 0:
@@ -399,7 +432,7 @@ def generate_frames():
                                    frame_nmr, encoding_failures, MAX_ENCODING_FAILURES)
                     if encoding_failures >= MAX_ENCODING_FAILURES:
                         logger.error("Stopping video after repeated JPEG encoding failures")
-                        shutdown_resources()
+                        shutdown_resources(status='failed')
                         return
                     continue
                 encoding_failures = 0
@@ -408,7 +441,7 @@ def generate_frames():
                 # Inference/tracking/annotation errors may leave shared state
                 # inconsistent. Stop once instead of retrying indefinitely.
                 logger.exception("Stopping video at frame %d during %s", frame_nmr, stage)
-                shutdown_resources()
+                shutdown_resources(status='failed')
                 return
 
         yield (b'--frame\r\n'

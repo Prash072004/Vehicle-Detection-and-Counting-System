@@ -53,6 +53,10 @@ class Capture:
 
 class ApplicationTests(unittest.TestCase):
     def setUp(self):
+        # Existing model/route tests must never create production storage.
+        storage_patch = patch.dict(os.environ, {'TRAFFIC_STORAGE_ENABLED': 'false'})
+        storage_patch.start()
+        self.addCleanup(storage_patch.stop)
         self.logger_patch = patch.object(application, 'logger')
         self.logger = self.logger_patch.start()
         self.addCleanup(self.logger_patch.stop)
