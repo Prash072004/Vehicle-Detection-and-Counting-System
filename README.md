@@ -17,6 +17,8 @@ Candidates are observations for review, not legally confirmed violations.
 - Startup selection of local video files or a webcam; standalone local-model
   speed benchmarking and labeled-frame accuracy evaluation.
 - SORT tracking with the existing Kalman-filter and IoU association implementation.
+- Configurable SORT parameters, bounded track lifecycle metadata, and confirmed
+  observation-only crossing inputs. Optional headless tracking replay/evaluation.
 - Stateful movement-segment intersection with a configurable finite stop line.
 - Direction checks, jitter hysteresis, observation-gap and position-jump limits,
   and conservative handling of unknown or changing signal timing.
@@ -41,6 +43,7 @@ Crossings with uncertain signal timing do not create red-light candidates.
 .
 |-- main.py                         Flask routes, startup, video pipeline
 |-- vehicle_detector.py             Vehicle configuration, filtering, ROI
+|-- tracking_manager.py             SORT settings, lifecycle, observed outputs
 |-- violation_logic.py              Geometry, configuration, track/event state
 |-- util.py                         Plate association, OCR and utility helpers
 |-- add_missing_data.py             Standalone CSV interpolation helper
@@ -57,13 +60,18 @@ Crossings with uncertain signal timing do not create red-light candidates.
 |-- tools/
 |   |-- benchmark_detection.py       Optional local model speed comparisons
 |   |-- evaluate_detection.py        Optional labeled-frame precision/recall
+|   |-- benchmark_tracking.py        Fixed-detection parameter replay
+|   |-- evaluate_tracking.py         Labeled identity metrics
 |   `-- detection_common.py          Offline tool helpers
 |-- docs/phase3_detection.md         Configuration, benchmarking, dataset format
+|-- docs/phase4_tracking.md          Tracking lifecycle, metrics and experiments
 `-- tests/
     |-- test_stability.py            34 stability checks
     |-- test_violation_logic.py      52 geometry/integration checks
     |-- test_vehicle_detection.py    Detection and application regressions
-    `-- test_detection_tools.py      Offline evaluation/benchmark checks
+    |-- test_detection_tools.py      Offline detection tools
+    |-- test_tracking.py            SORT safety, lifecycle and integration
+    `-- test_tracking_tools.py      Identity metrics and fixed-input replays
 ```
 
 The root and SORT `.gitignore` files are also tracked. Model weights, video,
@@ -127,6 +135,14 @@ restart to change an active session. The 720 x 480 processing and crossing
 coordinates remain unchanged. See [Phase 3 detection documentation](docs/phase3_detection.md)
 for settings, benchmark commands, accuracy dataset formats and limitations.
 
+SORT retains its default `max_age=1`, `min_hits=3`, `iou_threshold=0.3`.
+`TRAFFIC_SORT_MAX_AGE`, `TRAFFIC_SORT_MIN_HITS` and
+`TRAFFIC_SORT_IOU_THRESHOLD` configure startup experiments. The application
+suppresses native tentative startup output, never confirms crossings from pure
+predictions, and retains earned confirmation for observed short-gap recovery.
+See [Phase 4 tracking documentation](docs/phase4_tracking.md) for exact semantics,
+tradeoffs, lifecycle metadata, headless imports and identity evaluation.
+
 ## Crossing configuration
 
 Defaults are defined in `CrossingConfig` in `violation_logic.py` and instantiated
@@ -183,8 +199,9 @@ With the local default video and model files present, run:
 .\myvenv\Scripts\python.exe -B -m unittest discover -s tests -v
 ```
 
-The suite has 154 tests: the original 86 (34 stability and 52 crossing/integration
-checks), 38 Phase 3 detection checks, and 30 offline-tool checks. Model and OCR inference
+The suite has 219 tests: all 154 Phase 1-3 tests (34 stability, 52 crossing/
+integration, 38 detection, 30 offline detection-tool checks), plus 39 Phase 4
+tracking/application and 26 tracking-tool checks. Model and OCR inference
 are mocked in automated tests. Small real OpenCV
 video/JPEG and SORT checks are included. Deterministic trajectories cover signal
 changes, finite endpoints, direction, jitter, missing observations, history

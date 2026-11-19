@@ -10,6 +10,7 @@ import cvzone
 import numpy as np
 from violation_logic import CrossingConfig, CrossingDetector
 from vehicle_detector import DetectionConfig, detect_vehicles, project_path, resolve_video_source
+from tracking_manager import TrackingConfig, TrackingManager, sanitize_tracks
 
 
 app = Flask(__name__)
@@ -23,6 +24,7 @@ PLATE_MODEL_PATH = PROJECT_ROOT / "models" / "license_plate_detector.pt"
 MAX_ENCODING_FAILURES = 3
 CROSSING_CONFIG = CrossingConfig()
 VEHICLE_DETECTION_CONFIG = DetectionConfig()
+TRACKING_CONFIG = TrackingConfig()
 crossing_detector = CrossingDetector(CROSSING_CONFIG)
 
 # Resources belong to the process, not to an individual streaming request.
@@ -78,6 +80,7 @@ def initialize_resources():
     global crossing_detector, _frame_index, _last_video_timestamp_ms
     global VEHICLE_DETECTION_CONFIG
     global _active_video_source
+    global TRACKING_CONFIG
 
     with _resource_lock:
         if _initialization_error is not None:
@@ -88,6 +91,7 @@ def initialize_resources():
         capture = None
         try:
             detection_config = DetectionConfig.from_environment(VEHICLE_DETECTION_CONFIG)
+            tracking_config = TrackingConfig.from_environment(TRACKING_CONFIG)
             detection_config.roi.validate_frame(CROSSING_CONFIG.frame_size)
             source = resolve_video_source(os.environ.get('TRAFFIC_VIDEO_SOURCE', VIDEO_PATH), PROJECT_ROOT)
             vehicle_path = project_path(os.environ.get('TRAFFIC_VEHICLE_MODEL', VEHICLE_MODEL_PATH), PROJECT_ROOT)
@@ -107,9 +111,8 @@ def initialize_resources():
 
             vehicle_model = _load_yolo_model(vehicle_path)
             plate_model = _load_yolo_model(PLATE_MODEL_PATH)
-            from sort.sort import Sort
             from util import get_car as associate_plate, read_license_plate as recognize_plate
-            tracker = Sort()
+            tracker = TrackingManager(tracking_config, CROSSING_CONFIG.frame_size)
         except Exception as error:
             _release_capture(capture)
             _initialization_error = "Video initialization failed: {}".format(error)
@@ -120,6 +123,7 @@ def initialize_resources():
         license_plate_detector_model = plate_model
         mot_tracker = tracker
         VEHICLE_DETECTION_CONFIG = detection_config
+        TRACKING_CONFIG = tracking_config
         _active_video_source = source
         get_car = associate_plate
         read_license_plate = recognize_plate
@@ -128,6 +132,7 @@ def initialize_resources():
         _last_video_timestamp_ms = None
         _initialized = True
         logger.info("Video resources initialized for %s; vehicle settings: %s", source, detection_config)
+        logger.info("SORT tracking settings: %s", tracking_config)
 
 
 def shutdown_resources():
@@ -137,6 +142,8 @@ def shutdown_resources():
         _processing_finished = True
         capture, cap = cap, None
         _release_capture(capture)
+        if isinstance(mot_tracker, TrackingManager):
+            mot_tracker.clear()
 
 
 def _at_video_end():
@@ -217,10 +224,19 @@ def generate_frames():
 
                 # track vehicles
                 stage = "SORT tracking"
-                track_ids = mot_tracker.update(detections_array)
+                track_ids, invalid_ids = sanitize_tracks(
+                    mot_tracker.update(detections_array), CROSSING_CONFIG.frame_size)
+                if isinstance(mot_tracker, TrackingManager):
+                    invalid_ids.update(mot_tracker.invalid_ids)
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug("SORT frame=%d active=%d recovered=%s expired=%s invalid=%s",
+                                     frame_nmr, len(mot_tracker.tracks), mot_tracker.recovered_ids,
+                                     mot_tracker.expired_ids, sorted(invalid_ids))
 
                 stage = "crossing evaluation"
                 crossing_detector.expire(frame_nmr)
+                for track_id in invalid_ids:
+                    crossing_detector.mark_uncertain(track_id, 'invalid or ambiguous tracking output')
                 visible_candidates = set()
 
                 stage = "frame annotation"

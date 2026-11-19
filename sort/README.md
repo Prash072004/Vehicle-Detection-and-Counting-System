@@ -1,6 +1,28 @@
 SORT
 =====
 
+### Local application integration changes (2026-11-19)
+
+The original Alex Bewley copyright header and GPL-3.0-or-later source notice
+remain in `sort.py`; the GPL text in `LICENSE` is unchanged. Local modifications:
+
+- Plotting (`matplotlib`, `skimage.io`) is imported only by the `--display`
+  demonstration. Importing `Sort` does not select Tk or require those packages.
+  The demonstration honours the configured Matplotlib backend.
+- Demonstration colors use a local seeded RNG rather than resetting NumPy's
+  global RNG whenever this module is imported.
+- Invalid predicted boxes (nonfinite or nonpositive area) are removed together
+  with their tracker objects. The old infinity path could remove only a matrix
+  row and misalign detection-to-tracker association indices.
+
+Kalman equations, assignment strategy and native defaults remain unchanged.
+Core tracking uses NumPy, FilterPy and SciPy (or the existing optional LAP
+backend). The historical `requirements.txt` also lists demo dependencies.
+The Flask application uses the separately documented `tracking_manager.py`
+adapter for lifecycle metadata and confirmed, observed-only crossing inputs;
+the standalone demo retains native SORT output behaviour. See
+[`../docs/phase4_tracking.md`](../docs/phase4_tracking.md).
+
 A simple online and realtime tracking algorithm for 2D multiple object tracking in video sequences.
 See an example [video here](https://alex.bewley.ai/misc/SORT-MOT17-06-FRCNN.webm).
 

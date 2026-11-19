@@ -17,20 +17,17 @@
 """
 from __future__ import print_function
 
+# Local modifications, 2026-11-19: defer GUI imports to the display demo, avoid
+# resetting application RNG state, and remove invalid prediction rows and their
+# tracker objects together. Kalman equations and assignment policy are unchanged.
+
 import os
 import numpy as np
-import matplotlib
-matplotlib.use('TkAgg')
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from skimage import io
 
 import glob
 import time
 import argparse
 from filterpy.kalman import KalmanFilter
-
-np.random.seed(0)
 
 
 def linear_assignment(cost_matrix):
@@ -224,9 +221,11 @@ class Sort(object):
     for t, trk in enumerate(trks):
       pos = self.trackers[t].predict()[0]
       trk[:] = [pos[0], pos[1], pos[2], pos[3], 0]
-      if np.any(np.isnan(pos)):
+      # Local fix: remove the same invalid rows AND tracker objects. Masking an
+      # infinite row alone used to shift association indices onto other tracks.
+      if not np.all(np.isfinite(pos)) or pos[2] <= pos[0] or pos[3] <= pos[1]:
         to_del.append(t)
-    trks = np.ma.compress_rows(np.ma.masked_invalid(trks))
+    trks = np.delete(trks, to_del, axis=0)
     for t in reversed(to_del):
       self.trackers.pop(t)
     matched, unmatched_dets, unmatched_trks = associate_detections_to_trackers(dets,trks, self.iou_threshold)
@@ -275,8 +274,13 @@ if __name__ == '__main__':
   phase = args.phase
   total_time = 0.0
   total_frames = 0
-  colours = np.random.rand(32, 3) #used only for display
+  colours = np.random.RandomState(0).rand(32, 3) # demo-local RNG; no import side effect
   if(display):
+    # Plotting is optional and belongs only to the interactive demonstration.
+    # Honour Matplotlib's configured backend instead of forcing Tk at import.
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+    from skimage import io
     if not os.path.exists('mot_benchmark'):
       print('\n\tERROR: mot_benchmark link not found!\n\n    Create a symbolic link to the MOT benchmark\n    (https://motchallenge.net/data/2D_MOT_2015/#download). E.g.:\n\n    $ ln -s /path/to/MOT2015_challenge/2DMOT2015 mot_benchmark\n\n')
       exit()
