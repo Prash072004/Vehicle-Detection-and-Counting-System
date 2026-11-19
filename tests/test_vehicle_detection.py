@@ -1,4 +1,5 @@
 """Phase 3 detector boundary, configuration and application regressions."""
+from fastapi.testclient import TestClient
 
 from dataclasses import replace
 import os
@@ -298,7 +299,7 @@ class ApplicationDetectionTests(unittest.TestCase):
         capture.isOpened.return_value = False
         with patch.dict(os.environ, {'TRAFFIC_VIDEO_SOURCE': 'webcam:0'}), \
                 patch.object(self.app.cv2, 'VideoCapture', return_value=capture):
-            self.assertEqual(self.app.app.test_client().get('/video').status_code, 503)
+            self.assertEqual(TestClient(self.app.app, follow_redirects=False).get('/video').status_code, 503)
         capture.release.assert_called_once()
 
     def test_missing_configured_video_or_model_fails_before_capture(self):

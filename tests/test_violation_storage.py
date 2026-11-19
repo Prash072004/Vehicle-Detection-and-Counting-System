@@ -1,4 +1,5 @@
-"""Bounded retries, event/OCR persistence and unchanged Flask behavior."""
+"""Bounded retries, event/OCR persistence and compatible HTTP behavior."""
+from fastapi.testclient import TestClient
 from dataclasses import replace
 from pathlib import Path
 import tempfile
@@ -253,7 +254,7 @@ class ApplicationStorageTests(unittest.TestCase):
         list(self.app.generate_frames())
         row=service.repository.history()[0]
         self.assertEqual(row['automatic_plate'],'AB12CDE')
-        self.assertEqual(self.app.app.test_client().get('/violations').get_json(),['AB12CDE'])
+        self.assertEqual(TestClient(self.app.app, follow_redirects=False).get('/violations').json(),['AB12CDE'])
         self.assertEqual(service.repository.get_session(service.session['session_id'])['processing_status'],'completed')
 
     def test_ocr_exception_candidate_survives_restart(self):
@@ -274,12 +275,12 @@ class ApplicationStorageTests(unittest.TestCase):
         self.assertEqual(self.app.crossing_detector.events[7]['persistence']['status'],'failed')
 
     def test_history_and_review_not_exposed_as_public_routes(self):
-        rules={rule.rule for rule in self.app.app.url_map.iter_rules()}
+        rules={route.path for route in self.app.app.routes}
         self.assertNotIn('/history',rules);self.assertNotIn('/review',rules)
         self.fixture.prepare_stream();service=self.attach()
         old=candidate(service.session['session_id'])
         service.repository.save_event(old,{'status':'accepted','license_plate':'UP15AB1234','confidence':.9})
-        self.assertEqual(self.app.app.test_client().get('/violations').get_json(),[])
+        self.assertEqual(TestClient(self.app.app, follow_redirects=False).get('/violations').json(),[])
 
 
 if __name__=='__main__':

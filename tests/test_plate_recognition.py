@@ -1,4 +1,5 @@
 """Model-free OCR rules, association, bounded evidence and application regressions."""
+from fastapi.testclient import TestClient
 from dataclasses import replace
 import importlib.util
 import os
@@ -405,11 +406,11 @@ class ApplicationOCRTests(unittest.TestCase):
         item=self.app.crossing_detector.events[7]
         identity=item['event_id']
         self.assertIsNone(item['license_plate'])
-        self.app.app.test_client().post('/set_light/green')
+        TestClient(self.app.app, follow_redirects=False).post('/set_light/green')
         next(stream)
         self.assertEqual(item['event_id'],identity)
         self.assertEqual(item['status'],'candidate')
-        self.assertEqual(self.app.app.test_client().get('/violations').get_json(),['UP15AB1234'])
+        self.assertEqual(TestClient(self.app.app, follow_redirects=False).get('/violations').json(),['UP15AB1234'])
         list(stream)
 
     def test_low_score_plate_does_not_call_ocr(self):
@@ -486,7 +487,7 @@ class ApplicationOCRTests(unittest.TestCase):
 
     def test_invalid_startup_configuration_fails_before_capture(self):
         with patch.dict(os.environ,{'TRAFFIC_OCR_CONFIDENCE':'nan'}),patch.object(self.app.cv2,'VideoCapture') as capture:
-            self.assertEqual(self.app.app.test_client().get('/video').status_code,503)
+            self.assertEqual(TestClient(self.app.app, follow_redirects=False).get('/video').status_code,503)
         capture.assert_not_called()
 
     def test_plate_threshold_is_applied_to_yolo_prefilter(self):

@@ -1,6 +1,6 @@
 # Traffic Signal Violation Detection System
 
-A Flask-based computer vision prototype that detects vehicles in a prerecorded
+A FastAPI-based computer vision prototype that detects vehicles in a prerecorded
 traffic video, tracks them with SORT, and creates a candidate when a vehicle
 crosses a finite stop line in the prohibited direction during a simulated red
 signal. License plate detection and EasyOCR can enrich that candidate.
@@ -35,8 +35,8 @@ Candidates are observations for review, not legally confirmed violations.
   integrity hashes; disabled by default. Retention is an explicit local operation.
 - A browser MJPEG stream, red/green controls, and a list of recognized plates.
 - Asset-path validation, bounded JPEG failure handling, EOF checks, diagnostic
-  logging, and process-owned video capture cleanup. Debug/reloading is disabled
-  by default when running `main.py` directly.
+  logging, and process-owned video capture cleanup. A single processing thread
+  broadcasts the latest JPEG to all viewers; Uvicorn uses one worker without reload.
 
 A green crossing is not reclassified when the light later turns red. A first
 sighting already beyond the line is insufficient to establish a crossing.
@@ -46,7 +46,10 @@ Crossings with uncertain signal timing do not create red-light candidates.
 
 ```text
 .
-|-- main.py                         Flask routes, startup, video pipeline
+|-- main.py                         Entry point and compatible CV pipeline API
+|-- web_api.py                      FastAPI routes, templates and lifespan
+|-- processing_service.py           Single processing owner, bounded broadcast
+|-- requirements.txt                Tested Windows/Python 3.8 dependency pins
 |-- vehicle_detector.py             Vehicle configuration, filtering, ROI
 |-- tracking_manager.py             SORT settings, lifecycle, observed outputs
 |-- plate_recognition.py            Plate syntax, crops, association, event OCR
@@ -79,6 +82,7 @@ Crossings with uncertain signal timing do not create red-light candidates.
 |-- docs/phase4_tracking.md          Tracking lifecycle, metrics and experiments
 |-- docs/phase5_ocr.md               OCR settings, evidence, diagnostics and tools
 |-- docs/phase6_storage.md           SQLite, evidence, review, export and retention
+|-- docs/phase7_fastapi_migration.md  ASGI lifecycle, viewers, setup and verification
 `-- tests/
     |-- test_stability.py            34 stability checks
     |-- test_violation_logic.py      52 geometry/integration checks
@@ -91,7 +95,8 @@ Crossings with uncertain signal timing do not create red-light candidates.
     |-- test_database.py            Schema, transactions, records and review
     |-- test_violation_storage.py   Session persistence and application hooks
     |-- test_evidence.py            Clean-frame files, hashes and boundaries
-    `-- test_violation_export.py    Selected exports and privacy defaults
+    |-- test_violation_export.py    Selected exports and privacy defaults
+    `-- test_fastapi.py             ASGI lifecycle, broadcasting and persistence
 ```
 
 The root and SORT `.gitignore` files are also tracked. Model weights, video,
@@ -100,19 +105,39 @@ local secrets, and the local PDF report are excluded from Git.
 
 ## Environment and required local assets
 
-Validation used the supplied Python 3.8.10 environment. The application imports
-Flask, Ultralytics/PyTorch, OpenCV, cvzone, NumPy, EasyOCR, FilterPy and SciPy.
-Matplotlib/scikit-image are optional SORT demo dependencies; Streamlit is loaded
-only by the optional `util.load_model` helper. The standalone visualizer imports
-pandas. EasyOCR initializes lazily using existing cached weights, with downloads
-disabled; missing assets fail explicitly rather than downloading models.
-Persistent storage uses Python's built-in `sqlite3`; no new package is required.
+Validation uses the existing **Windows CPython 3.8.10** environment, without
+installing packages or modifying `myvenv`. The installed compatible web stack is
+FastAPI 0.120.4, Starlette 0.44.0, Pydantic 2.10.6, Uvicorn 0.33.0 and HTTPX
+0.28.1. `requirements.txt` pins the complete installed dependency closure for the
+application, HTTPX tests and offline tools, including PyTorch 2.4.1+cu121,
+Ultralytics 8.3.217, EasyOCR 1.7.2, OpenCV 4.12.0.88 and NumPy 1.24.1.
+Flask is no longer an application dependency; no package was uninstalled.
+SQLite comes from Python's standard library.
 
-There is currently no complete application dependency manifest or lockfile.
-`sort/requirements.txt` covers only the older standalone SORT component; it is
-not a complete installation specification for this application. Provision a
-compatible environment separately rather than treating it as an application
-lockfile. The local `myvenv` directory is not distributed in this repository.
+**Python 3.11/3.12 is preferred for future development.** No usable interpreter of
+those versions is installed here. Python 3.8 and the pinned web stack are a
+compatibility baseline, not a current production platform. Do not install the
+latest FastAPI/Uvicorn into Python 3.8. A newer runtime needs a separately
+approved environment and dependency validation: OpenCV 4.12 requires NumPy 2
+on Python >=3.9, so this exact NumPy 1.24.1 specification cannot be reused there.
+No ML upgrades or new interpreter installation were performed.
+
+To reproduce the tested environment in a **separate** directory, after obtaining
+an approved Python 3.8.10 interpreter (do not recreate or modify `myvenv`):
+
+```powershell
+& <python-3.8.10-path> -m venv .venv
+.\.venv\Scripts\python.exe -m pip install torch==2.4.1+cu121 torchvision==0.19.1+cu121 --index-url https://download.pytorch.org/whl/cu121
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip check
+```
+
+These are setup instructions, not commands executed during migration. The local
+virtual environment is not distributed. Both OpenCV distributions in the pins
+mirror the supplied environment (Ultralytics/cvzone require `opencv-python`,
+EasyOCR requires `opencv-python-headless`); a fresh build must confirm the shared
+`cv2` import and video/JPEG tests. Optional `util.load_model` alone needs
+Streamlit, which is not part of the web application's dependency closure.
 
 Provide these existing, separately obtained assets at the following paths:
 
@@ -128,8 +153,7 @@ terminal working directory. It does not substitute a webcam or alternative
 YOLO weights if an asset is missing.
 
 EasyOCR also needs its English detector/recognizer weights in its external cache
-(normally `~/.EasyOCR/model`). Its existing reader can download missing OCR
-assets during initialization; provision that cache in advance for offline use.
+(normally `~/.EasyOCR/model`). Downloads are disabled; provision that cache in advance for offline use.
 No model weights or recordings are included in the repository.
 
 ## Run locally
@@ -137,17 +161,27 @@ No model weights or recordings are included in the repository.
 From the project root, using the prepared Windows environment:
 
 ```powershell
-.\myvenv\Scripts\python.exe -B main.py
+.\myvenv\Scripts\python.exe -B -m uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1 --timeout-graceful-shutdown 5
 ```
 
 Alternatively, use the equivalent Python executable from your own compatible
-environment. Open `http://127.0.0.1:5000/`, watch the stream, and use the existing
-red/green buttons to control the simulated signal. The built-in Flask server is
-for local demonstration, not a production deployment.
+environment. Open `http://127.0.0.1:8000/`, watch the stream, and use the existing
+red/green buttons to control the simulated signal. `python -B main.py` also runs
+Uvicorn on this address. API documentation is at `/docs`, with schema at
+`/openapi.json`. Do not use multiple workers or reload: each process would own a
+separate capture, tracker and SQLite session. Public production hosting is not
+configured by this migration.
+
+The five-second graceful HTTP shutdown deadline lets Uvicorn cancel ongoing
+streams before lifespan joins the processing owner. Keep it for webcam sources;
+without a deadline, open streams can delay shutdown indefinitely.
 
 The video does not loop automatically. EOF or a terminal processing error stops
 the shared processing session; restart the process to start another session.
-Other Flask routes remain available after video completion.
+Other HTTP routes remain available after video completion. Lifespan initializes
+resources once; the first video viewer starts consumption. Processing continues
+to EOF even if every viewer disconnects. Slow viewers skip older frames rather
+than advancing the source or building queues. See [Phase 7](docs/phase7_fastapi_migration.md).
 
 Vehicle confidence defaults to the original effective `0.25`; inference size is
 `640` and ROI filtering is disabled. Optional startup environment settings select
@@ -197,10 +231,12 @@ using the signal and frame captured at the original intersection.
 | Route | Response / behavior |
 | --- | --- |
 | `GET /` | Existing HTML interface |
-| `GET /video` | MJPEG with `boundary=frame`; HTTP 503 if initialization fails |
+| `GET /video` | Shared MJPEG with `boundary=frame`; 503 on unavailable startup |
 | `POST /set_light/red` | Set simulated red, then redirect to `/` |
 | `POST /set_light/green` | Set simulated green, then redirect to `/` |
-| `GET /violations` | JSON list of recognized plate strings |
+| `POST /set_light/{other}` | 422 validation error; signal unchanged |
+| `GET /violations` | Current-session JSON list of recognized plate strings |
+| `GET /docs`, `/openapi.json` | Automatic API documentation and schema |
 
 A red crossing creates an in-memory candidate before OCR succeeds. Pending OCR
 may continue while that vehicle remains visible, including after the light turns
@@ -234,8 +270,11 @@ With the local default video and model files present, run:
 .\myvenv\Scripts\python.exe -B -m unittest discover -s tests -v
 ```
 
-The suite has 412 tests: all 319 Phase 1-5 tests, plus 93 Phase 6 database,
-storage/application, evidence and export checks. Existing application fixtures
+The suite has **445 tests**: all 412 Phase 1-6 tests (only framework-specific
+client/startup assertions adapted), plus 33 FastAPI/producer/concurrency tests.
+New checks cover lifespan, one-owner broadcasting, slow/disconnected viewers,
+loop responsiveness, current-session JSON, and single-session SQLite/OCR/evidence.
+Existing application fixtures
 explicitly disable production storage; new storage tests use temporary databases.
 Model and OCR inference
 are mocked in automated tests. Small real OpenCV
@@ -249,9 +288,10 @@ validation.
 
 ## Known limitations
 
-- All viewers share one video capture and tracker. Processing is serialized per
-  frame, but frames are not broadcast independently to every client. This is a
-  single-viewer demonstration architecture.
+- One process/one Uvicorn worker owns video processing. Viewers receive the
+  latest frame, so a slow viewer can skip frames. This is a local shared-stream
+  prototype, not a distributed or multiple-worker processing service. Native
+  inference cannot be forcibly cancelled; shutdown reports a timeout if it hangs.
 - SORT IDs may fragment or switch under occlusion. Deduplication by track ID
   cannot fully deduplicate physical vehicles across ID changes.
 - Runtime candidate/crossing memory still grows with the number of recorded tracks.
@@ -270,7 +310,7 @@ validation.
   authentication and production deployment are not implemented.
 - The offline helpers are separate workflows. `add_missing_data.py` expects
   `test.csv`; `visualize.py` expects `test_interpolated.csv` and a root-level
-  `sample.mp4`. The active Flask pipeline does not produce these CSV inputs.
+  `sample.mp4`. The active FastAPI pipeline does not produce these CSV inputs.
 
 ## Existing demonstration images
 

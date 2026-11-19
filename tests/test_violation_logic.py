@@ -1,4 +1,5 @@
-"""Deterministic crossing trajectories and mocked Flask/OCR integration."""
+"""Deterministic crossing trajectories and mocked HTTP/OCR integration."""
+from fastapi.testclient import TestClient
 
 from pathlib import Path
 import sys
@@ -322,7 +323,7 @@ class CrossingIntegrationTests(unittest.TestCase):
         list(app.generate_frames())
         self.assertEqual(app.crossing_detector.events[7]['status'], 'candidate')
         self.assertIsNone(app.crossing_detector.events[7]['license_plate'])
-        self.assertEqual(app.app.test_client().get('/violations').get_json(), [])
+        self.assertEqual(TestClient(app.app, follow_redirects=False).get('/violations').json(), [])
 
     def test_ocr_success_enriches_same_event_and_legacy_json(self):
         app = self.application
@@ -332,7 +333,7 @@ class CrossingIntegrationTests(unittest.TestCase):
         self.assertEqual(event['license_plate'], 'AB12CDE')
         self.assertEqual(event['license_plate_confidence'], 0.9)
         self.assertEqual(event['status'], 'candidate')
-        self.assertEqual(app.app.test_client().get('/violations').get_json(), ['AB12CDE'])
+        self.assertEqual(TestClient(app.app, follow_redirects=False).get('/violations').json(), ['AB12CDE'])
 
     def test_ocr_exception_keeps_candidate_despite_terminal_stream_error(self):
         app = self.application
@@ -351,7 +352,7 @@ class CrossingIntegrationTests(unittest.TestCase):
         stream = app.generate_frames()
         next(stream)
         event_id = app.crossing_detector.events[7]['event_id']
-        app.app.test_client().post('/set_light/green')
+        TestClient(app.app, follow_redirects=False).post('/set_light/green')
         next(stream)
         self.assertEqual(app.crossing_detector.events[7]['event_id'], event_id)
         self.assertEqual(app.crossing_detector.events[7]['signal_state'], 'red')
@@ -380,7 +381,7 @@ class CrossingIntegrationTests(unittest.TestCase):
         def infer(frame, **kwargs):
             calls.append(None)
             if len(calls) == 2:
-                app.app.test_client().post('/set_light/green')
+                TestClient(app.app, follow_redirects=False).post('/set_light/green')
             return self.stability.result([])
 
         app.coco_model.side_effect = infer
@@ -399,7 +400,7 @@ class CrossingIntegrationTests(unittest.TestCase):
         ]
         stream = app.generate_frames()
         next(stream)
-        client = app.app.test_client()
+        client = TestClient(app.app, follow_redirects=False)
         client.post('/set_light/green')
         client.post('/set_light/red')
         next(stream)

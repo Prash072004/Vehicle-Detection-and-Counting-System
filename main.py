@@ -6,7 +6,8 @@ from dataclasses import asdict
 from pathlib import Path
 from threading import Lock, RLock
 
-from flask import Flask, render_template, Response, redirect, url_for, jsonify
+import uvicorn
+from web_api import create_app as _create_app
 import cv2
 import cvzone
 import numpy as np
@@ -17,7 +18,6 @@ from plate_recognition import OCRConfig, OCRManager, preprocess, safe_crop, vali
 from violation_storage import StorageConfig, ViolationStorage
 
 
-app = Flask(__name__)
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -229,8 +229,8 @@ def generate_frames():
         logger.exception("Cannot start video stream")
         return
 
-    # Clients still share one source and tracker. Serialize a frame, but do not
-    # hold the lock across yield or release the capture on client disconnect.
+    # Only ProcessingService consumes this generator in the web application.
+    # Keep the lock scoped to one frame and release it before broadcasting.
     encoding_failures = 0
     while True:
         with _resource_lock:
@@ -448,53 +448,49 @@ def generate_frames():
                b'Content-Type: image/jpeg\r\n\r\n' + jpeg + b'\r\n')
 
 
-@app.route('/', methods=["GET"])
-def index():
-    return render_template("index.html", light=traffic_light)
-
-
-@app.route('/video')
-def video():
-    try:
-        initialize_resources()
-    except Exception:
-        logger.exception("Video initialization failed")
-        return Response("Video unavailable. See server logs for details.",
-                        status=503, mimetype="text/plain")
-    return Response(generate_frames(),
-                    mimetype='multipart/x-mixed-replace; boundary=frame')
-
-
-@app.route('/set_light/<color>', methods=['POST'])
-def set_light(color):
+def _start_processing():
+    """Start a fresh lifespan after terminal completion, on the owner thread."""
+    global _initialized, _processing_finished, _initialization_error
+    global coco_model, license_plate_detector_model, mot_tracker
+    global storage_service, _storage_owner, ocr_manager, _ocr_owner
+    global crossing_detector, _frame_index, _last_video_timestamp_ms
     global traffic_light, _signal_version
-    if color in ["red", "green"]:
-        with _signal_lock:
-            if traffic_light != color:
-                traffic_light = color
-                _signal_version += 1
-    return redirect(url_for("index"))
+    with _resource_lock:
+        if _processing_finished:
+            _initialized = False
+            _processing_finished = False
+            _initialization_error = None
+            coco_model = license_plate_detector_model = mot_tracker = None
+            storage_service = _storage_owner = ocr_manager = _ocr_owner = None
+            crossing_detector = CrossingDetector(CROSSING_CONFIG)
+            _frame_index = -1
+            _last_video_timestamp_ms = None
+            plate_memory.clear()
+            with _signal_lock:
+                traffic_light, _signal_version = 'green', 0
+        initialize_resources()
 
 
-@app.route("/violations")
-def get_violations():
-    global plate_memory
-    # Convert dict to list of plate numbers
-    violations_per_frame = list(plate_memory.values())
-    return jsonify(violations_per_frame)
+def create_app():
+    return _create_app(globals())
+
+
+app = create_app()
 
 
 def main():
     logging.basicConfig(level=logging.INFO)
     try:
-        initialize_resources()
-        app.run(debug=False, use_reloader=False)
+        # Pass the app object: running main.py must not import a second main
+        # module. Lifespan, not an HTTP connection, owns startup and cleanup.
+        uvicorn.run(app, host='127.0.0.1', port=8000, workers=1, reload=False,
+                    timeout_graceful_shutdown=5)
         return 0
-    except Exception:
+    except (Exception, SystemExit):
         logger.exception("Application startup or server failed")
         return 1
     finally:
-        shutdown_resources()
+        app.state.processing.stop()
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 Model/OCR calls are mocked. OpenCV decoding and SORT also get small real tests.
 No inference downloads, bytecode caches, or environment changes are needed.
 """
+from fastapi.testclient import TestClient
 
 import importlib.util
 import os
@@ -73,7 +74,8 @@ class ApplicationTests(unittest.TestCase):
         application._signal_version = 0
         application.traffic_light = 'green'
         application.plate_memory.clear()
-        application.app.config['TESTING'] = True
+        application.app = application.create_app()
+        self.addCleanup(application.app.state.processing.stop)
         self.frame = np.zeros((480, 720, 3), dtype=np.uint8)
         self.addCleanup(application.shutdown_resources)
 
@@ -358,48 +360,46 @@ class ApplicationTests(unittest.TestCase):
 
     def test_routes_remain_compatible_and_usable_after_eof(self):
         self.prepare_stream()
-        client = application.app.test_client()
+        client = TestClient(application.app, follow_redirects=False)
         self.assertEqual(client.get('/').status_code, 200)
         response = client.post('/set_light/red')
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.headers['Location'], '/')
         self.assertEqual(application.traffic_light, 'red')
-        self.assertEqual(client.get('/violations').get_json(), [])
-        response = client.get('/video', buffered=True)
+        self.assertEqual(client.get('/violations').json(), [])
+        response = client.get('/video')
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content_type, 'multipart/x-mixed-replace; boundary=frame')
-        self.assertTrue(response.data.startswith(b'--frame\r\n'))
+        self.assertEqual(response.headers['content-type'], 'multipart/x-mixed-replace; boundary=frame')
+        self.assertTrue(response.content.startswith(b'--frame\r\n'))
         application.plate_memory[7] = 'AB12CDE'
-        self.assertEqual(client.get('/violations').get_json(), ['AB12CDE'])
+        self.assertEqual(client.get('/violations').json(), ['AB12CDE'])
         self.assertEqual(client.get('/').status_code, 200)
         self.assertEqual(client.post('/set_light/green').status_code, 302)
         client.post('/set_light/yellow')
         self.assertEqual(application.traffic_light, 'green')
-        self.assertEqual(client.get('/video', buffered=True).data, b'')
+        self.assertEqual(client.get('/video').content, b'')
 
     def test_video_startup_failure_returns_503_without_breaking_other_routes(self):
         with patch.object(application, 'VIDEO_PATH', ROOT / 'video/__missing__.mp4'):
-            client = application.app.test_client()
+            client = TestClient(application.app, follow_redirects=False)
             self.assertEqual(client.get('/video').status_code, 503)
             self.assertEqual(client.get('/').status_code, 200)
-            self.assertEqual(client.get('/violations').get_json(), [])
+            self.assertEqual(client.get('/violations').json(), [])
 
     def test_direct_startup_disables_debug_reloader_and_always_cleans_up(self):
-        with patch.object(application, 'initialize_resources') as initialize, \
-                patch.object(application.app, 'run') as run, \
-                patch.object(application, 'shutdown_resources') as shutdown:
+        with patch.object(application.uvicorn, 'run') as run, \
+                patch.object(application.app.state.processing, 'stop') as stop:
             self.assertEqual(application.main(), 0)
-        initialize.assert_called_once()
-        run.assert_called_once_with(debug=False, use_reloader=False)
-        shutdown.assert_called_once()
+        run.assert_called_once_with(application.app, host='127.0.0.1', port=8000,
+                                    workers=1, reload=False, timeout_graceful_shutdown=5)
+        stop.assert_called_once()
 
     def test_startup_failure_returns_nonzero_without_starting_server(self):
-        with patch.object(application, 'initialize_resources', side_effect=RuntimeError('startup')), \
-                patch.object(application.app, 'run') as run, \
-                patch.object(application, 'shutdown_resources') as shutdown:
+        with patch.object(application.uvicorn, 'run', side_effect=RuntimeError('startup')) as run, \
+                patch.object(application.app.state.processing, 'stop') as stop:
             self.assertEqual(application.main(), 1)
-        run.assert_not_called()
-        shutdown.assert_called_once()
+        run.assert_called_once()
+        stop.assert_called_once()
 
     def test_import_does_not_open_video_or_initialize_models(self):
         specification = importlib.util.spec_from_file_location('stability_import_check', ROOT / 'main.py')

@@ -1,4 +1,5 @@
 """Deterministic SORT lifecycle/safety tests; no YOLO weights, OCR, or GUI."""
+from fastapi.testclient import TestClient
 
 from dataclasses import replace
 import os
@@ -370,7 +371,7 @@ class ApplicationTrackingTests(unittest.TestCase):
         self.assertNotIn(identity, self.app.mot_tracker.tracks)
         list(stream)
         self.assertEqual(self.app.crossing_detector.events[identity]['event_id'], event_id)
-        self.assertEqual(self.app.app.test_client().get('/violations').get_json(), ['AB12CDE'])
+        self.assertEqual(TestClient(self.app.app, follow_redirects=False).get('/violations').json(), ['AB12CDE'])
         self.assertEqual(self.app.mot_tracker.tracks, {})
 
     def test_new_identity_beyond_line_does_not_duplicate_old_candidate(self):
@@ -413,7 +414,7 @@ class ApplicationTrackingTests(unittest.TestCase):
     def test_invalid_tracking_configuration_returns_503_before_capture(self):
         with patch.dict(os.environ, {'TRAFFIC_SORT_MAX_AGE': '-1'}), \
                 patch.object(self.app.cv2, 'VideoCapture') as capture:
-            self.assertEqual(self.app.app.test_client().get('/video').status_code, 503)
+            self.assertEqual(TestClient(self.app.app, follow_redirects=False).get('/video').status_code, 503)
         capture.assert_not_called()
 
     def test_configuration_is_frozen_for_an_active_session(self):
