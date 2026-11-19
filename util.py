@@ -1,23 +1,19 @@
-import string
-import easyocr
+"""Plate helper compatibility API; heavyweight optional imports stay local."""
+import logging
+from plate_recognition import (OCRConfig, associate_plate, correction_candidates,
+                               rank_ocr, validate_plate)
 
-# Initialize the OCR reader
-reader = easyocr.Reader(['en'], gpu=False)
+logger = logging.getLogger(__name__)
+# Cached assets only. Missing/corrupt EasyOCR weights fail without downloading.
+reader = None
 
-# Mapping dictionaries for character conversion
-dict_char_to_int = {'O': '0',
-                    'I': '1',
-                    'J': '3',
-                    'A': '4',
-                    'G': '6',
-                    'S': '5'}
 
-dict_int_to_char = {'0': 'O',
-                    '1': 'I',
-                    '3': 'J',
-                    '4': 'A',
-                    '6': 'G',
-                    '5': 'S'}
+def get_reader():
+    global reader
+    if reader is None:
+        import easyocr
+        reader = easyocr.Reader(['en'], gpu=False, download_enabled=False)
+    return reader
 
 
 def write_csv(results, output_path):
@@ -58,109 +54,28 @@ def write_csv(results, output_path):
         f.close()
 
 
-def license_complies_format(text):
-    """
-    Check if the license plate text complies with the required format.
-
-    Args:
-        text (str): License plate text.
-
-    Returns:
-        bool: True if the license plate complies with the format, False otherwise.
-    """
-    if len(text) != 7:
-        return False
-
-    if (text[0] in string.ascii_uppercase or text[0] in dict_int_to_char.keys()) and \
-       (text[1] in string.ascii_uppercase or text[1] in dict_int_to_char.keys()) and \
-       (text[2] in ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'] or text[2] in dict_char_to_int.keys()) and \
-       (text[3] in ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'] or text[3] in dict_char_to_int.keys()) and \
-       (text[4] in string.ascii_uppercase or text[4] in dict_int_to_char.keys()) and \
-       (text[5] in string.ascii_uppercase or text[5] in dict_int_to_char.keys()) and \
-       (text[6] in string.ascii_uppercase or text[6] in dict_int_to_char.keys()):
-        return True
-    else:
-        return False
+def license_complies_format(text, config=None):
+    return len(correction_candidates(text, 1.0, config)) == 1
 
 
-def format_license(text):
-    """
-    Format the license plate text by converting characters using the mapping dictionaries.
-
-    Args:
-        text (str): License plate text.
-
-    Returns:
-        str: Formatted license plate text.
-    """
-    license_plate_ = ''
-    mapping = {0: dict_int_to_char, 1: dict_int_to_char, 4: dict_int_to_char, 5: dict_int_to_char, 6: dict_int_to_char,
-               2: dict_char_to_int, 3: dict_char_to_int}
-    for j in [0, 1, 2, 3, 4, 5, 6]:
-        if text[j] in mapping[j].keys():
-            license_plate_ += mapping[j][text[j]]
-        else:
-            license_plate_ += text[j]
-
-    return license_plate_
+def format_license(text, config=None):
+    candidates = correction_candidates(text, 1.0, config)
+    return candidates[0].normalized_text if len(candidates) == 1 else None
 
 
-def read_license_plate(license_plate_crop):
-    """
-    Read the license plate text from the given cropped image.
-
-    Args:
-        license_plate_crop (PIL.Image.Image): Cropped image containing the license plate.
-
-    Returns:
-        tuple: Tuple containing the formatted license plate text and its confidence score.
-    """
-
-    detections = reader.readtext(license_plate_crop)
-
-    for detection in detections:
-        bbox, text, score = detection
-
-        text = text.upper().replace(' ', '')
-
-        if license_complies_format(text):
-            return format_license(text), score
-
-    return None, None
+def read_license_plate(license_plate_crop, config=None):
+    """Structured result, also unpackable as the historical (text, score) pair."""
+    config = config or OCRConfig()
+    detections = get_reader().readtext(license_plate_crop)
+    if config.diagnostic:
+        # Explicit local opt-in only; do not enable for routine processing.
+        logger.debug('Local OCR diagnostic outputs: %r', detections)
+    return rank_ocr(detections, config)
 
 
 def get_car(license_plate, vehicle_track_ids):
-    """
-    Retrieve the vehicle coordinates and ID based on the license plate coordinates.
+    return associate_plate(license_plate, vehicle_track_ids)
 
-    Args:
-        license_plate (tuple): Tuple containing the coordinates of the license plate (x1, y1, x2, y2, score, class_id).
-        vehicle_track_ids (list): List of vehicle track IDs and their corresponding coordinates.
-
-    Returns:
-        tuple: Tuple containing the vehicle coordinates (x1, y1, x2, y2) and ID.
-    """
-    x1, y1, x2, y2, score, class_id = license_plate
-
-    foundIt = False
-    for j in range(len(vehicle_track_ids)):
-        xcar1, ycar1, xcar2, ycar2, car_id = vehicle_track_ids[j]
-
-        if x1 > xcar1 and y1 > ycar1 and x2 < xcar2 and y2 < ycar2:
-            car_indx = j
-            foundIt = True
-            break
-
-    if foundIt:
-        return vehicle_track_ids[car_indx]
-
-    return -1, -1, -1, -1, -1
-
-
-#######################################################################
-# Helper function for streamlit deployment
-from ultralytics import YOLO
-import streamlit as st
 
 def load_model(model_path, key):
     """
@@ -172,6 +87,9 @@ def load_model(model_path, key):
     Returns:
 
     """
+    import streamlit as st
+    from ultralytics import YOLO
+
     if st.session_state[key] is None:
         try:
             with st.spinner(f"Loading {key}..."):

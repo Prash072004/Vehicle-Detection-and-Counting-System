@@ -1,6 +1,7 @@
 import atexit
 import logging
 import os
+import time
 from pathlib import Path
 from threading import Lock, RLock
 
@@ -11,6 +12,7 @@ import numpy as np
 from violation_logic import CrossingConfig, CrossingDetector
 from vehicle_detector import DetectionConfig, detect_vehicles, project_path, resolve_video_source
 from tracking_manager import TrackingConfig, TrackingManager, sanitize_tracks
+from plate_recognition import OCRConfig, OCRManager, preprocess, safe_crop, valid_box, probability
 
 
 app = Flask(__name__)
@@ -25,7 +27,10 @@ MAX_ENCODING_FAILURES = 3
 CROSSING_CONFIG = CrossingConfig()
 VEHICLE_DETECTION_CONFIG = DetectionConfig()
 TRACKING_CONFIG = TrackingConfig()
+OCR_CONFIG = OCRConfig()
 crossing_detector = CrossingDetector(CROSSING_CONFIG)
+ocr_manager = None
+_ocr_owner = None
 
 # Resources belong to the process, not to an individual streaming request.
 cap = None
@@ -81,6 +86,7 @@ def initialize_resources():
     global VEHICLE_DETECTION_CONFIG
     global _active_video_source
     global TRACKING_CONFIG
+    global OCR_CONFIG, ocr_manager, _ocr_owner
 
     with _resource_lock:
         if _initialization_error is not None:
@@ -92,6 +98,7 @@ def initialize_resources():
         try:
             detection_config = DetectionConfig.from_environment(VEHICLE_DETECTION_CONFIG)
             tracking_config = TrackingConfig.from_environment(TRACKING_CONFIG)
+            ocr_config = OCRConfig.from_environment(OCR_CONFIG)
             detection_config.roi.validate_frame(CROSSING_CONFIG.frame_size)
             source = resolve_video_source(os.environ.get('TRAFFIC_VIDEO_SOURCE', VIDEO_PATH), PROJECT_ROOT)
             vehicle_path = project_path(os.environ.get('TRAFFIC_VEHICLE_MODEL', VEHICLE_MODEL_PATH), PROJECT_ROOT)
@@ -111,6 +118,8 @@ def initialize_resources():
 
             vehicle_model = _load_yolo_model(vehicle_path)
             plate_model = _load_yolo_model(PLATE_MODEL_PATH)
+            # Keep the inference callable API while configuring YOLO's prefilter.
+            plate_model.overrides.update(conf=ocr_config.plate_confidence)
             from util import get_car as associate_plate, read_license_plate as recognize_plate
             tracker = TrackingManager(tracking_config, CROSSING_CONFIG.frame_size)
         except Exception as error:
@@ -124,15 +133,19 @@ def initialize_resources():
         mot_tracker = tracker
         VEHICLE_DETECTION_CONFIG = detection_config
         TRACKING_CONFIG = tracking_config
+        OCR_CONFIG = ocr_config
         _active_video_source = source
         get_car = associate_plate
         read_license_plate = recognize_plate
         crossing_detector = CrossingDetector(CROSSING_CONFIG)
+        ocr_manager = OCRManager(ocr_config)
+        _ocr_owner = crossing_detector
         _frame_index = -1
         _last_video_timestamp_ms = None
         _initialized = True
         logger.info("Video resources initialized for %s; vehicle settings: %s", source, detection_config)
         logger.info("SORT tracking settings: %s", tracking_config)
+        logger.info("Plate recognition settings: %s", ocr_config)
 
 
 def shutdown_resources():
@@ -144,6 +157,17 @@ def shutdown_resources():
         _release_capture(capture)
         if isinstance(mot_tracker, TrackingManager):
             mot_tracker.clear()
+        if ocr_manager is not None:
+            ocr_manager.clear()
+
+
+def _recognizer():
+    global ocr_manager, _ocr_owner
+    # Event ownership also keeps explicit independent sessions isolated.
+    if _ocr_owner is not crossing_detector:
+        ocr_manager = OCRManager(OCR_CONFIG)
+        _ocr_owner = crossing_detector
+    return ocr_manager
 
 
 def _at_video_end():
@@ -234,23 +258,42 @@ def generate_frames():
                                      mot_tracker.expired_ids, sorted(invalid_ids))
 
                 stage = "crossing evaluation"
+                recognition = _recognizer()
+                recognition.expire(frame_nmr, crossing_detector.events)
                 crossing_detector.expire(frame_nmr)
                 for track_id in invalid_ids:
                     crossing_detector.mark_uncertain(track_id, 'invalid or ambiguous tracking output')
+                    if track_id in crossing_detector.events:
+                        recognition.invalidate(crossing_detector.events[track_id])
+                if isinstance(mot_tracker, TrackingManager):
+                    for track_id in mot_tracker.expired_ids:
+                        if track_id in crossing_detector.events:
+                            recognition.invalidate(crossing_detector.events[track_id], 'track_expired')
                 visible_candidates = set()
 
                 stage = "frame annotation"
                 # Drawing bounding boxes
                 for x1, y1, x2, y2, car_id in track_ids:
                     stage = "crossing evaluation"
+                    previous_observation = crossing_detector.history.get(int(car_id))
                     observation = crossing_detector.observe_bbox(
                         car_id, (x1, y1, x2, y2), frame_nmr, frame_signal,
                         signal_version, timestamp_ms,
                     )
                     if observation['anchor'] is None:
+                        if car_id in crossing_detector.events:
+                            recognition.invalidate(crossing_detector.events[car_id])
                         logger.debug("Uncertain track at frame %d: %s", frame_nmr, observation['reason'])
                         continue
                     car_id = observation['track_id']
+                    if car_id in crossing_detector.events and observation['event'] is None:
+                        # Crossing records deliberately persist; OCR still needs
+                        # continuous identity evidence after an event is created.
+                        previous = previous_observation
+                        if (previous is None or
+                                not 1 <= frame_nmr - previous.current_frame_index <= CROSSING_CONFIG.maximum_frame_gap or
+                                np.linalg.norm(np.asarray(observation['anchor']) - previous.current_position) > CROSSING_CONFIG.maximum_jump_pixels):
+                            recognition.invalidate(crossing_detector.events[car_id])
                     x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
                     w, h = x2 - x1, y2 - y1
                     trigger_x, trigger_y = map(int, observation['anchor'])
@@ -274,45 +317,73 @@ def generate_frames():
                         cvzone.putTextRect(frame, plate_text, (x1, y1 - 25),
                                            scale=1, thickness=2, colorR=color, colorT=(255, 255, 255))
 
-                # Enrich unresolved candidates, including after red becomes green.
-                # Stop OCR for a track once its candidate has a recognized plate.
+                # Event scheduling is independent of the current signal color.
                 pending_ocr = {car_id for car_id in visible_candidates
-                               if crossing_detector.events[car_id]['license_plate'] is None}
+                               if recognition.due(crossing_detector.events[car_id], frame_nmr, scan=True)}
                 if pending_ocr:
                     stage = "license plate inference"
                     license_plates = license_plate_detector_model(inference_frame)[0]
+                    # One highest-quality crop per event per frame, never several
+                    # same-frame detector boxes masquerading as consensus.
+                    crops = {}
                     for license_plate in license_plates.boxes.data.tolist():
+                        recognition.counts['plates_detected'] += 1
+                        if len(license_plate) != 6:
+                            recognition.counts['invalid_crops'] += 1
+                            continue
                         x1, y1, x2, y2, score, class_id = license_plate
-
+                        if not probability(score) or score < OCR_CONFIG.plate_confidence:
+                            recognition.counts['confidence_rejected_plates'] += 1
+                            continue
+                        if valid_box(license_plate[:4]) is None:
+                            recognition.counts['invalid_crops'] += 1
+                            # Preserve Phase 1's terminal malformed-geometry guard.
+                            raise ValueError('Invalid license plate box')
                         stage = "license plate association"
-                        # assign license plate to car
                         xcar1, ycar1, xcar2, ycar2, car_id = get_car(license_plate, track_ids)
-
-                        if car_id != -1 and car_id in pending_ocr:
-
-                            stage = "license plate preprocessing"
-                            # crop license plate
-                            license_plate_crop = inference_frame[int(y1):int(y2), int(x1): int(x2), :]
-                            if license_plate_crop.size == 0:
-                                raise ValueError("License plate crop is empty")
-
-                            # process license plate
-                            license_plate_crop_gray = cv2.cvtColor(license_plate_crop, cv2.COLOR_BGR2GRAY)
-                            _, license_plate_crop_thresh = cv2.threshold(license_plate_crop_gray, 64, 255, cv2.THRESH_BINARY_INV)
-
-
-                            # read license plate number
-                            stage = "OCR processing"
-                            license_plate_text, license_plate_text_score = read_license_plate(license_plate_crop_thresh)
-
-                            if crossing_detector.enrich_event(car_id, license_plate_text, license_plate_text_score):
-                                plate_memory[car_id] = crossing_detector.events[car_id]['license_plate']
-                                pending_ocr.discard(car_id)
-                                # results[frame_nmr][car_id] = {'car': {'bbox': [xcar1, ycar1, xcar2, ycar2]},
-                                #                               'license_plate': {'bbox': [x1, y1, x2, y2],
-                                #                                                 'text': license_plate_text,
-                                #                                                 'bbox_score': score,
-                                #                                                 'text_score': license_plate_text_score}}
+                        if car_id == -1:
+                            recognition.counts['failed_associations'] += 1
+                            continue
+                        recognition.counts['associated_plates'] += 1
+                        if car_id not in pending_ocr:
+                            continue
+                        crop = safe_crop(inference_frame, license_plate[:4], OCR_CONFIG)
+                        if crop is None:
+                            recognition.counts['invalid_crops'] += 1
+                            recognition.metadata(crossing_detector.events[car_id]).update(status='unreadable', reason='crop_too_small_or_outside')
+                            continue
+                        recognition.counts['valid_crops'] += 1
+                        quality = crop.shape[0] * crop.shape[1] * score
+                        if car_id not in crops or quality > crops[car_id][0]:
+                            crops[car_id] = (quality, crop, score)
+                    for car_id, (quality, crop, score) in crops.items():
+                        event = crossing_detector.events[car_id]
+                        if not recognition.due(event, frame_nmr, quality):
+                            continue
+                        stage = "license plate preprocessing"
+                        start = time.perf_counter()
+                        prepared = preprocess(crop, OCR_CONFIG.preprocessing, OCR_CONFIG.upscale)
+                        recognition.preprocessing_seconds += time.perf_counter() - start
+                        recognition.begin(event, frame_nmr, quality)
+                        stage = "OCR processing"
+                        start = time.perf_counter()
+                        try:
+                            reading = read_license_plate(prepared, config=OCR_CONFIG)
+                        except Exception:
+                            recognition.counts['ocr_exceptions'] += 1
+                            recognition.metadata(event).update(status='unreadable', reason='ocr_exception')
+                            raise  # Preserve the existing terminal shared-stream policy.
+                        finally:
+                            recognition.ocr_seconds += time.perf_counter() - start
+                        selected = recognition.record(event, frame_nmr, reading, score)
+                        if selected and crossing_detector.enrich_event(car_id, *selected):
+                            plate_memory[car_id] = event['license_plate']
+                    for car_id in pending_ocr - crops.keys():
+                        meta = recognition.metadata(crossing_detector.events[car_id])
+                        if meta['status'] == 'not_attempted':
+                            meta.update(status='unreadable', reason='no_usable_associated_plate')
+                if frame_nmr % 60 == 0 and logger.isEnabledFor(logging.DEBUG):
+                    logger.debug('OCR stage counts: %s', dict(recognition.counts))
 
                 stage = "JPEG encoding"
                 if frame is None or frame.size == 0:
