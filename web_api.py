@@ -5,12 +5,13 @@ from threading import Lock
 from typing import List
 
 import anyio
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from processing_service import ProcessingService
+from dashboard_state import DashboardStatus
 
 
 class SignalColor(str, Enum):
@@ -79,8 +80,27 @@ def create_app(runtime):
         return RedirectResponse('/', status_code=302)
 
     @app.get('/violations', response_model=List[str])
-    def get_violations():
+    def get_violations(response: Response):
+        response.headers['Cache-Control'] = 'no-store'
         with runtime['_resource_lock']:
             return list(runtime['plate_memory'].values())
+
+    @app.get('/api/status', response_model=DashboardStatus)
+    def status(request: Request, response: Response):
+        response.headers['Cache-Control'] = 'no-store'
+        data = runtime['dashboard'].snapshot()
+        owner = request.app.state.processing.public_state()
+        if owner['state'] == 'error':
+            data['state'] = 'error'
+        elif data['state'] != 'error' and owner['state'] == 'stopping':
+            data['state'] = 'stopping'
+        elif data['state'] not in ('completed', 'stopped', 'error'):
+            data['state'] = owner['state']
+        data['metrics']['active_viewers'] = owner['active_viewers']
+        with runtime['_signal_lock']:
+            data['signal'] = dict(color=runtime['traffic_light'], version=runtime['_signal_version'])
+        data['error'] = ('Processing is unavailable. Check the video source and server logs.'
+                         if data['state'] == 'error' else None)
+        return data
 
     return app

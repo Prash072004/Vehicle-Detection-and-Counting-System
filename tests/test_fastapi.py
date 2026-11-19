@@ -283,7 +283,7 @@ class FastAPIApplicationTests(FastAPIFixture):
         self.assertEqual(schema['components']['schemas']['SignalColor']['enum'],['red','green'])
         response=schema['paths']['/violations']['get']['responses']['200']['content']['application/json']['schema']
         self.assertEqual(response['type'],'array'); self.assertEqual(response['items']['type'],'string')
-        self.assertEqual(set(schema['paths']),{'/','/video','/set_light/{color}','/violations'})
+        self.assertEqual(set(schema['paths']),{'/','/video','/set_light/{color}','/violations','/api/status'})
         self.assertEqual(self.client.get('/docs').status_code,200)
 
     def test_lifespan_initializes_models_once_before_first_frame(self):

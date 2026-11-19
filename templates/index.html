@@ -1,64 +1,72 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SAI Prototype</title>
-    <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
-    <script src="{{ url_for('static', path='js/script.js') }}"></script>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark"><title>Traffic monitoring · SAI</title>
+<link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
+<script defer src="{{ url_for('static', path='js/script.js') }}"></script>
 </head>
 <body>
-    <div class="main-container">
-        <div class="heading">
-        <h1>Traffic Signal Violation Detection System</h1>
-        <h2>(With License Plate recognition feature)</h3>
-    </div>
-
-    <div class="Video-Play">
-
-        <div class="video-wrapper">
-
-            <div class="video-container">
-                <img src="{{ url_for('video') }}" alt="Video will display here!">
-            </div>
-
-            <div class="traffic-light">
-                <div class="light red {% if light == 'red' %}active{% endif %}"></div>
-                <div class="light yellow {% if light == 'yellow' %}active{% endif %}"></div>
-                <div class="light green {% if light == 'green' %}active{% endif %}"></div>
-            </div>
-            <div class="control-data">
-                <div class="traffic-light-control">
-
-                <p>Current Light:
-                    <strong
-                      style="color: {% if light == 'red' %}#ff1744{% elif light == 'yellow' %}#ffeb3b{% elif light == 'green' %}#00e676{% else %}#FFC107{% endif %};">
-                      {{ light.upper() }}
-                    </strong>
-                </p>
-
-                <form action="/set_light/red" method="post">
-                    <button type="submit">Switch to RED</button>
-                </form>
-
-                <form action="/set_light/green" method="post">
-                    <button type="submit">Switch to GREEN</button>
-                </form>
-
-                </div>
-                <div class="data">
-                    <div class="violations-container">
-                        <h3>Current Violating Vehicles</h3>
-                        <ul id="violations-list">
-                            <li>Loading...</li>
-                        </ul>
-                    </div>
-                </div>
-            </div>
-
-        </div>
-    </div>
-    </div>
-
+<a class="skip-link" href="#monitoring">Skip to monitoring</a>
+<header class="app-header"><a class="brand" href="/" aria-label="SAI monitoring home"><span class="brand-mark" aria-hidden="true">S</span> SAI <span class="brand-subtitle">/ TRAFFIC INTELLIGENCE</span></a><span class="environment">● Local monitoring</span></header>
+<main id="monitoring" tabindex="-1">
+<div class="page-heading"><div><p class="eyebrow">OPERATIONS / OVERVIEW</p><h1>Traffic monitoring</h1><p class="subtitle">Live footage, signal controls and crossing candidates in one place.</p></div><div class="connection"><span id="status-badge" class="badge" role="status">Connecting</span><span id="last-update">Waiting for server</span></div></div>
+<p id="connection-message" class="notice" role="status" hidden></p>
+<noscript><p class="notice">Enable JavaScript for streaming and monitoring updates. Signal forms still work.</p></noscript>
+<div class="monitor-grid">
+<section class="panel video-panel" aria-labelledby="video-title">
+<div class="panel-heading"><div><p class="eyebrow">MONITORING FEED</p><h2 id="video-title">Road observation</h2></div><span id="source-kind" class="muted">Source unavailable</span></div>
+<div class="video-stage">
+<div class="video-placeholder" aria-hidden="true"><svg viewBox="0 0 48 48" width="48" height="48"><rect x="5" y="11" width="29" height="26" rx="5"/><path d="m34 20 9-5v18l-9-5M16 21h8M16 27h5"/></svg><span>Waiting for the video source</span></div>
+<img id="video-stream" data-src="{{ url_for('video') }}" width="720" height="480" alt="Processed road footage with vehicle tracks and crossing annotations">
+<div id="video-message" class="video-message" role="status">Connecting to processing service…</div>
+</div>
+<div class="video-footer"><span id="video-description">One shared processing session</span><button id="retry-stream" class="button quiet" type="button" hidden>Reconnect stream</button><span class="muted">MJPEG · annotations preserved</span></div>
+<div class="progress-line"><label for="source-progress">Source progress <span id="progress-text">Unavailable</span></label><progress id="source-progress" max="100" aria-label="Source frames processed"></progress></div>
+</section>
+<aside class="side-stack" aria-label="Monitoring controls">
+<section class="panel signal-panel" aria-labelledby="signal-title">
+<div class="panel-heading"><div><p class="eyebrow">MANUAL CONTROL</p><h2 id="signal-title">Traffic signal</h2></div><span class="badge neutral">Simulated</span></div>
+<div class="signal-state"><div class="signal-housing" aria-hidden="true"><span id="red-lamp" class="lamp red {% if light == 'red' %}active{% endif %}"></span><span id="green-lamp" class="lamp green {% if light == 'green' %}active{% endif %}"></span></div><div><p class="muted">Current signal</p><strong id="current-signal">{{ light.upper() }}</strong><p class="small muted">Server-confirmed state</p></div></div>
+<div class="signal-actions"><form action="/set_light/red" method="post" data-color="red"><button class="button red-button" type="submit" aria-pressed="{{ 'true' if light == 'red' else 'false' }}">Switch to RED</button></form><form action="/set_light/green" method="post" data-color="green"><button class="button green-button" type="submit" aria-pressed="{{ 'true' if light == 'green' else 'false' }}">Switch to GREEN</button></form></div>
+<p id="signal-feedback" class="small feedback" role="status">Manual signals are not connected to physical traffic lights.</p>
+</section>
+<section class="panel session-panel" aria-labelledby="session-title">
+<div class="panel-heading"><div><p class="eyebrow">PROCESSING</p><h2 id="session-title">Session details</h2></div></div>
+<dl class="details"><div><dt>Session</dt><dd id="session-id">Unavailable</dd></div><div><dt>Processing size</dt><dd id="frame-size">Unavailable</dd></div><div><dt>Source FPS</dt><dd id="source-fps">Unavailable</dd></div><div><dt>Active viewers</dt><dd id="active-viewers">Unavailable</dd></div><div><dt>Storage</dt><dd id="storage-state">Unavailable</dd></div></dl>
+<p class="small muted">All viewers share one producer. Closing this page does not stop processing.</p>
+</section>
+</aside>
+</div>
+<section class="metrics-grid" aria-label="Current session statistics">
+<article class="metric"><p>Processed frames</p><strong id="metric-frames">—</strong><span>Completed and encoded</span></article>
+<article class="metric"><p>Processing FPS</p><strong id="metric-fps">—</strong><span>Work rate · excludes pacing</span></article>
+<article class="metric"><p>Vehicle detections</p><strong id="metric-detections">—</strong><span>Observations, not unique vehicles</span></article>
+<article class="metric"><p>Observed tracks</p><strong id="metric-tracks">—</strong><span>Confirmed tracks in the last frame</span></article>
+<article class="metric accent"><p>Crossing candidates</p><strong id="metric-candidates">—</strong><span>Require human review</span></article>
+<article class="metric"><p>Accepted plates</p><strong id="metric-plates">—</strong><span>OCR results, not verified registrations</span></article>
+</section>
+<div class="records-grid">
+<section class="panel candidates-panel" aria-labelledby="candidates-title">
+<div class="panel-heading"><div><p class="eyebrow">CURRENT SESSION</p><h2 id="candidates-title">Recent crossing candidates</h2></div><span class="badge neutral">Review required</span></div>
+<p class="section-caption">Latest 20 created candidates. Automated observations are not legally confirmed violations.</p>
+<p id="candidates-empty" class="empty-state">Processing has not started.</p>
+<div id="candidate-table-wrap" class="table-wrap" hidden><table><caption class="sr-only">Current-session crossing candidates and recognition status</caption><thead><tr><th scope="col">Track</th><th scope="col">Frame</th><th scope="col">Signal</th><th scope="col">Detection</th><th scope="col">Recognition</th></tr></thead><tbody id="candidate-rows"></tbody></table></div>
+<div class="restricted-note">Historical records and human review are unavailable. An authorized review workflow is required.</div>
+</section>
+<section class="panel plates-panel" aria-labelledby="plates-title">
+<div class="panel-heading"><div><p class="eyebrow">RECOGNITION</p><h2 id="plates-title">Accepted plate results</h2></div></div>
+<p class="section-caption">Current-session OCR only. Results may require correction.</p>
+<p id="plates-message" class="small muted" role="status">No accepted plate results loaded.</p><ul id="violations-list" class="plate-list" aria-label="Accepted plate results"></ul>
+</section>
+</div>
+<section class="panel evidence-panel" aria-labelledby="evidence-title"><div><p class="eyebrow">EVIDENCE REVIEW</p><h2 id="evidence-title">Evidence access is restricted</h2><p id="evidence-status" class="muted">Real evidence requires an authorized review workflow. No stored images are loaded.</p></div><button class="button quiet" id="evidence-demo" type="button">Preview viewer with synthetic fixture</button></section>
+<dialog id="evidence-dialog" aria-labelledby="evidence-dialog-title">
+<div class="dialog-heading"><div><p class="eyebrow">SYNTHETIC FIXTURE · NOT ROAD EVIDENCE</p><h2 id="evidence-dialog-title">Evidence viewer preview</h2></div><button id="close-evidence" class="button quiet" type="button" autofocus>Close</button></div>
+<label for="evidence-kind">Evidence type</label><select id="evidence-kind"><option value="crossing">Crossing frame · synthetic frame 42</option><option value="missing">Plate crop · unavailable fixture</option></select>
+<figure><img id="evidence-image" width="720" height="480" alt="Synthetic geometric fixture for testing the evidence viewer, not real footage"><figcaption id="evidence-caption" role="status">Synthetic fixture only. No event or plate data.</figcaption></figure>
+</dialog>
+</main>
+<footer class="app-footer"><span>SAI · Traffic Signal Violation Detection System</span><span>Manual signal · automated candidates · human verification</span></footer>
 </body>
 </html>

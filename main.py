@@ -18,6 +18,7 @@ from plate_recognition import OCRConfig, OCRManager, preprocess, safe_crop, vali
 from violation_storage import StorageConfig, ViolationStorage
 from performance_monitor import PerformanceConfig, PerformanceMonitor, FramePacer
 from pipeline_profiling import PipelineInstrumentation
+from dashboard_state import DashboardState
 
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ PERFORMANCE_CONFIG = PerformanceConfig()
 performance = PerformanceMonitor(PERFORMANCE_CONFIG)
 _performance_instrumentation = None
 _processing_stop = None
+dashboard = DashboardState()
 storage_service = None
 _storage_owner = None
 crossing_detector = CrossingDetector(CROSSING_CONFIG)
@@ -182,6 +184,7 @@ def shutdown_resources(status='stopped'):
         service = _storage()
         if service is not None:
             service.finish(crossing_detector.events,status)
+        dashboard.finish(status, service)
         if ocr_manager is not None:
             ocr_manager.clear()
         if _performance_instrumentation is not None:
@@ -254,6 +257,7 @@ def generate_frames():
                 return
             frame_nmr = _frame_index + 1
             stage = "frame reading"
+            dashboard_tick = time.perf_counter()
             try:
                 ret, frame = cap.read()
                 if not ret or frame is None or frame.size == 0:
@@ -458,6 +462,9 @@ def generate_frames():
                     continue
                 encoding_failures = 0
                 jpeg = buffer.tobytes()
+                dashboard.frame(frame_nmr, time.perf_counter()-dashboard_tick,
+                    len(detections_array), len(track_ids), crossing_detector.events,
+                    len(plate_memory), pacer.fps, storage)
             except Exception:
                 # Inference/tracking/annotation errors may leave shared state
                 # inconsistent. Stop once instead of retrying indefinitely.
@@ -481,6 +488,7 @@ def _start_processing():
     global traffic_light, _signal_version
     global performance, PERFORMANCE_CONFIG, _performance_instrumentation
     with _resource_lock:
+        dashboard.reset()
         PERFORMANCE_CONFIG = PerformanceConfig.from_environment(PERFORMANCE_CONFIG)
         performance = PerformanceMonitor(PERFORMANCE_CONFIG)
         if _processing_finished:
@@ -497,6 +505,11 @@ def _start_processing():
                 traffic_light, _signal_version = 'green', 0
         initialize_resources()
         _performance_instrumentation = PipelineInstrumentation(globals(),performance).install()
+        try:
+            frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT) if cap is not None else None
+        except (TypeError, ValueError, cv2.error):
+            frame_count = None
+        dashboard.ready(_active_video_source, CROSSING_CONFIG.frame_size, frame_count, storage_service)
 
 
 def create_app():

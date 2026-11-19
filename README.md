@@ -33,7 +33,9 @@ Candidates are observations for review, not legally confirmed violations.
   accepted OCR enrichment, local review/correction history, filtering and exports.
 - Optional bounded clean-frame evidence capture with relative references and
   integrity hashes; disabled by default. Retention is an explicit local operation.
-- A browser MJPEG stream, red/green controls, and a list of recognized plates.
+- A responsive dark monitoring dashboard, shared MJPEG stream, server-confirmed
+  red/green controls, current-session candidate summaries and accepted OCR results.
+  Read-only monitoring reports real processing counters without querying SQLite.
 - Asset-path validation, bounded JPEG failure handling, EOF checks, diagnostic
   logging, and process-owned video capture cleanup. A single processing thread
   broadcasts the latest JPEG to all viewers using coalesced notifications; Uvicorn
@@ -51,6 +53,7 @@ Crossings with uncertain signal timing do not create red-light candidates.
 |-- main.py                         Entry point and compatible CV pipeline API
 |-- web_api.py                      FastAPI routes, templates and lifespan
 |-- processing_service.py           Single processing owner, bounded broadcast
+|-- dashboard_state.py              Bounded redacted monitoring snapshots
 |-- performance_monitor.py          Private bounded timings and source pacing
 |-- pipeline_profiling.py           Optional reversible stage instrumentation
 |-- requirements.txt                Tested Windows/Python 3.8 dependency pins
@@ -89,6 +92,7 @@ Crossings with uncertain signal timing do not create red-light candidates.
 |-- docs/phase6_storage.md           SQLite, evidence, review, export and retention
 |-- docs/phase7_fastapi_migration.md  ASGI lifecycle, viewers, setup and verification
 |-- docs/phase8_performance.md        Measured bottlenecks, pacing and profiling
+|-- docs/phase9_frontend.md           Dashboard, metrics, privacy and verification
 `-- tests/
     |-- test_stability.py            34 stability checks
     |-- test_violation_logic.py      52 geometry/integration checks
@@ -238,12 +242,13 @@ using the signal and frame captured at the original intersection.
 
 | Route | Response / behavior |
 | --- | --- |
-| `GET /` | Existing HTML interface |
+| `GET /` | Responsive traffic-monitoring dashboard |
 | `GET /video` | Shared MJPEG with `boundary=frame`; 503 on unavailable startup |
 | `POST /set_light/red` | Set simulated red, then redirect to `/` |
 | `POST /set_light/green` | Set simulated green, then redirect to `/` |
 | `POST /set_light/{other}` | 422 validation error; signal unchanged |
 | `GET /violations` | Current-session JSON list of recognized plate strings |
+| `GET /api/status` | Typed, redacted processing state, counters and latest 20 current-session candidate summaries |
 | `GET /docs`, `/openapi.json` | Automatic API documentation and schema |
 
 A red crossing creates an in-memory candidate before OCR succeeds. Pending OCR
@@ -259,7 +264,10 @@ enters `/violations`. Fixed inverse threshold 64 remains the default. See
 [Phase 5 OCR documentation](docs/phase5_ocr.md) for all settings, diagnostic
 counters, scheduling, format limitations, tool schemas and measured results.
 
-The existing frontend polls `/violations` every 500 ms. This compatibility
+The dashboard requests `/api/status` two seconds after each completed update,
+pausing monitoring requests while hidden. Accepted plates use `/violations`
+only when results exist, normally at most once per ten seconds (a count or
+session change triggers a refresh). This compatibility
 endpoint is not an event API: it omits candidates without recognized plates and
 returns remembered plate strings rather than a list of currently visible cars.
 The public plate list remains process-local and does not reveal stored history.
@@ -323,8 +331,11 @@ With the local default video and model files present, run:
 .\myvenv\Scripts\python.exe -B -m unittest discover -s tests -v
 ```
 
-The suite has **502 tests**: all 445 Phase 1-7 tests plus 57 performance,
-configuration, pacing, bounded-notification and benchmark validation checks.
+The suite has **530 Python tests**, preserving all 502 Phase 1-8 checks and adding
+28 dashboard/API checks. One existing OpenAPI route assertion now includes
+`/api/status`. When Node.js is available, the Python suite also runs **22 JavaScript
+behavior tests** with Node's built-in runner; no packages are installed.
+Run them separately with `node --test tests/frontend.test.cjs`.
 One existing concurrency
 test now explicitly waits for its producer barrier before asserting it; all
 its original assertions remain.

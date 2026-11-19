@@ -209,3 +209,18 @@ class ProcessingService:
             state['processing_cannot_keep_up']=(state['processing_fps']<state['source_fps']) if state['source_fps'] and state['processing_fps'] is not None else None
         if self.monitor is not None:state['performance']=self.monitor.snapshot()
         return state
+
+    def public_state(self):
+        """Small transport state; no profiling report or exception content."""
+        with self._lock:
+            if self._error is not None:
+                state = 'error'
+            elif self._stop.is_set() and not self._done:
+                state = 'stopping'
+            elif self._done:
+                state = 'stopped' if self._stop.is_set() else 'completed'
+            elif self._ready.is_set():
+                state = 'processing' if self._activate.is_set() else 'ready'
+            else:
+                state = 'initializing' if self._thread is not None else 'not_started'
+            return dict(state=state, active_viewers=self._viewers)
